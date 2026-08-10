@@ -13,12 +13,30 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import random
+from contextlib import contextmanager
 from datetime import timedelta
 
 from .config import HISTORY_LEN, STATE_DIR, STATE_FILE, log
 from .fmt import now
+
+
+@contextmanager
+def single_run():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    handle = open(STATE_DIR / "run.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise RuntimeError("другая попытка уже выполняется") from None
+    try:
+        yield
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
 
 
 def read_state() -> dict:
