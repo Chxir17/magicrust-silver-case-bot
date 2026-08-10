@@ -231,6 +231,7 @@ def browser_context(playwright, headless: bool):
     if os.environ.get("MR_NO_SANDBOX", "1") == "1" and sys.platform.startswith("linux"):
         args.append("--no-sandbox")
 
+    log.info("запускаю Chromium (headless=%s)", headless)
     context = playwright.chromium.launch_persistent_context(
         user_data_dir=str(PROFILE_DIR),
         headless=headless,
@@ -270,16 +271,40 @@ def open_site(context):
 def dismiss_promo(page) -> None:
     """Закрывает рекламный поп-ап со скидкой, если он перекрывает страницу.
 
-    Плашку про cookie бот не трогает: согласия за вас никто не даёт —
-    нажмите «Ok» сами один раз во время `bot.py login`, профиль это запомнит.
+    Плашку про cookie бот по умолчанию не трогает: соглашаться за вас он не должен.
+    Нажмите «Ok» сами во время `bot.py login` — профиль это запомнит. Если сессию
+    переносили куками и нажать было негде, разрешите явно: MR_ACCEPT_COOKIE=1.
     """
-    close = page.locator(".cohort-popup__close")
+    targets = [".cohort-popup__close"]
+    if os.environ.get("MR_ACCEPT_COOKIE") == "1":
+        targets.append(".magic-cookie .accept-cookie")
+
+    for selector in targets:
+        element = page.locator(selector)
+        try:
+            if element.count() and element.first.is_visible():
+                element.first.click(timeout=3000)
+                page.wait_for_timeout(300)
+        except Exception:                                     # noqa: BLE001
+            pass                                              # поп-апы не критичны
+
+
+def click_element(locator, what: str, timeout: int = 10_000) -> None:
+    """Клик с запасным вариантом.
+
+    Низ страницы перекрывает непринятая плашка cookie, и обычный клик в неё
+    упирается: Playwright ждёт, пока элемент станет доступен, и падает по таймауту.
+    `dispatch_event` шлёт событие прямо в обработчик сайта, мимо геометрии.
+    """
     try:
-        if close.count() and close.first.is_visible():
-            close.first.click(timeout=3000)
-            page.wait_for_timeout(300)
-    except Exception:                                
-        pass                                              
+        locator.scroll_into_view_if_needed(timeout=timeout)
+    except Exception:                                         # noqa: BLE001
+        pass
+    try:
+        locator.click(timeout=timeout)
+    except PWTimeout:
+        log.warning("клик по %s перекрыт, шлю событие напрямую", what)
+        locator.dispatch_event("click")
 
 
 def select_gmod(page) -> None:
@@ -400,7 +425,11 @@ def cmd_status(_args) -> int:
             nickname = next((ln.strip() for ln in lines if ln.strip()), "")
         context.close()
 
-    print(f"Сессия:          {'активна — ' + nickname if authorized else 'НЕТ (нужен python bot.py login)'}")
+    if authorized:
+        # Ник в шапке рисуется скриптом и в headless часто пустой — не признак беды.
+        print(f"Сессия:          активна{' — ' + nickname if nickname else ''}")
+    else:
+        print("Сессия:          НЕТ (нужен python bot.py login)")
     last = parse_dt(state.get("last_open"))
     print(f"Последний кейс:  {last.astimezone().strftime('%d.%m %H:%M') if last else 'ещё не открывали'}")
     if state.get("last_win"):
@@ -441,13 +470,7 @@ def attempt_open(context) -> int:
         notify("Magic Rust: сессия истекла, нужен повторный вход через Steam")
         return 2
 
-    card = page.locator(CARD).first
-    card.scroll_into_view_if_needed()
-    try:
-        card.click(timeout=10_000)
-    except PWTimeout:
-        log.warning("обычный клик по карточке не прошёл, пробую dispatch_event")
-        card.dispatch_event("click")
+    click_element(page.locator(CARD).first, "карточке кейса")
     page.wait_for_selector(f"{MODAL}.modal-on", timeout=15_000)
     page.wait_for_timeout(1200)                               
 
@@ -475,7 +498,9 @@ def attempt_open(context) -> int:
             lambda r: "product-buy" in r.url and "product-buy-state" not in r.url,
             timeout=45_000,
         ) as info:
-            button.click()
+            # click_element сам разбирается с перекрытием, поэтому таймаут отсюда
+            # может прилететь только от ожидания ответа — ни с чем не спутать.
+            click_element(button, "кнопке «Открыть кейс»")
         response = info.value
         status = response.status
         try:

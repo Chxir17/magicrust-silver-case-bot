@@ -360,6 +360,7 @@ python bot.py import-cookies FILE        # загрузить сессию в п
 | `сессия истекла` | `bot.py login` заново (или заново перенести куки) |
 | `кейс не виден в режиме ...` | поставить `MR_GMOD=vanillax2plus` |
 | `кнопка «Открыть кейс» не найдена` | сайт поменял вёрстку — смотрите `state/last_error.png` и текст модалки в логе |
+| `клик по ... перекрыт` в логе | непринятая плашка cookie закрывает низ страницы; поставьте `MR_ACCEPT_COOKIE=1` или нажмите «Ok» вручную при `bot.py login` |
 | `ответ от /product-buy не пришёл` | смотрите `state/last_open.png`: бот всё равно решит по тексту модалки |
 | Chromium не стартует на VPS | `sudo playwright install-deps chromium`, проверьте `HEADLESS=1` в `.env` |
 | `kex_exchange_identification` при ssh/rsync | используете IP вместо алиаса из `~/.ssh/config` — порт не 22 |
