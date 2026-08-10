@@ -200,6 +200,15 @@ def notify(text: str, chat_id: str | None = None) -> None:
     )
 
 
+def scaled(ms: int) -> int:
+    """Растягивает таймауты на слабых VPS: MR_TIMEOUT_SCALE=3 даёт тройной запас."""
+    try:
+        factor = max(1.0, float(os.environ.get("MR_TIMEOUT_SCALE", "1")))
+    except ValueError:
+        factor = 1.0
+    return int(ms * factor)
+
+
 def user_agent() -> str:
     if os.environ.get("MR_UA"):
         return os.environ["MR_UA"]
@@ -245,7 +254,7 @@ def browser_context(playwright, headless: bool):
     context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
     )
-    context.set_default_timeout(30_000)
+    context.set_default_timeout(scaled(30_000))
     return context
 
 
@@ -261,8 +270,8 @@ def gmod() -> str:
 
 def open_site(context):
     page = context.pages[0] if context.pages else context.new_page()
-    page.goto(SITE, wait_until="domcontentloaded", timeout=60_000)
-    page.wait_for_selector(GMOD_BTN, timeout=30_000)
+    page.goto(SITE, wait_until="domcontentloaded", timeout=scaled(60_000))
+    page.wait_for_selector(GMOD_BTN, timeout=scaled(30_000))
     dismiss_promo(page)
     select_gmod(page)
     return page
@@ -289,13 +298,14 @@ def dismiss_promo(page) -> None:
             pass                                              # поп-апы не критичны
 
 
-def click_element(locator, what: str, timeout: int = 10_000) -> None:
+def click_element(locator, what: str, timeout: int | None = None) -> None:
     """Клик с запасным вариантом.
 
     Низ страницы перекрывает непринятая плашка cookie, и обычный клик в неё
     упирается: Playwright ждёт, пока элемент станет доступен, и падает по таймауту.
     `dispatch_event` шлёт событие прямо в обработчик сайта, мимо геометрии.
     """
+    timeout = timeout if timeout is not None else scaled(10_000)
     try:
         locator.scroll_into_view_if_needed(timeout=timeout)
     except Exception:                                         # noqa: BLE001
@@ -321,7 +331,7 @@ def select_gmod(page) -> None:
         page.wait_for_timeout(800)
 
     try:
-        page.wait_for_selector(CARD, state="visible", timeout=15_000)
+        page.wait_for_selector(CARD, state="visible", timeout=scaled(15_000))
     except PWTimeout as exc:
         raise RuntimeError(
             f"кейс (product {PRODUCT_ID}) не виден в режиме {target!r} — "
@@ -394,7 +404,7 @@ def cmd_login(_args) -> int:
     with sync_playwright() as playwright:
         context = browser_context(playwright, headless=False)
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(SITE, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(SITE, wait_until="domcontentloaded", timeout=scaled(60_000))
         deadline = time.time() + 15 * 60
         while time.time() < deadline:
             try:
@@ -471,7 +481,7 @@ def attempt_open(context) -> int:
         return 2
 
     click_element(page.locator(CARD).first, "карточке кейса")
-    page.wait_for_selector(f"{MODAL}.modal-on", timeout=15_000)
+    page.wait_for_selector(f"{MODAL}.modal-on", timeout=scaled(15_000))
     page.wait_for_timeout(1200)                               
 
     if page.locator(AUTH_BTN).count() > 0:
@@ -492,11 +502,16 @@ def attempt_open(context) -> int:
 
     log.info("нажимаю «%s»", button.inner_text().strip())
 
+    # Пишем все запросы страницы: если ответа не будет, по этому списку видно,
+    # ушло ли вообще что-нибудь — то есть сработал клик или нет.
+    requests: list[str] = []
+    page.on("request", lambda r: requests.append(r.url))
+
     body, status = "", None
     try:
         with page.expect_response(
             lambda r: "product-buy" in r.url and "product-buy-state" not in r.url,
-            timeout=45_000,
+            timeout=scaled(45_000),
         ) as info:
             # click_element сам разбирается с перекрытием, поэтому таймаут отсюда
             # может прилететь только от ожидания ответа — ни с чем не спутать.
@@ -509,6 +524,14 @@ def attempt_open(context) -> int:
             body = ""
     except PWTimeout:
         log.warning("ответ от /product-buy не пришёл за 45 с — смотрю по странице")
+        interesting = [
+            url for url in requests
+            if not re.search(r"\.(png|jpe?g|gif|svg|css|js|woff2?|ico)(\?|$)", url, re.I)
+        ]
+        if interesting:
+            log.warning("запросы после клика (%d): %s", len(interesting), "; ".join(interesting[-10:]))
+        else:
+            log.warning("после клика страница не сделала ни одного запроса — клик не сработал")
 
     payload = None
     if body:
