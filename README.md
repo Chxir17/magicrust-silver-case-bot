@@ -85,72 +85,56 @@ cp .env.example .env
 
 ```bash
 sudo adduser --system --group --home /opt/magicrust-bot magicrust
-sudo apt update && sudo apt install -y python3-venv rsync
+sudo apt update && sudo apt install -y python3-venv git
 ```
 
-Дальше нужно доставить код на сервер — любым из двух способов.
+### 2.2. Код на сервер из git
 
-#### Вариант А: из git-репозитория
-
-Удобнее для обновлений: правки уезжают через `git push`, а на сервере подтягиваются
-одной командой. Секреты в репозиторий не попадают — `.env` и `state/` перечислены
-в `.gitignore`, так что их всё равно переносим отдельно.
+Основной способ: правки уезжают через `git push`, на сервере подтягиваются одной
+командой, и всегда видно, какая версия там развёрнута. Секреты в репозиторий не
+попадают — `.env` и `state/` перечислены в `.gitignore`, поэтому их переносим отдельно.
 
 ```bash
 sudo apt install -y git
 sudo -u magicrust -H git clone {REPO} /opt/magicrust-bot
 ```
 
+Команды идут от имени `magicrust`, иначе файлы окажутся с чужим владельцем, сервис не
+сможет их прочитать, а git выругается на `dubious ownership`. Флаг `-H` подставляет
+`HOME=/opt/magicrust-bot`, без него git и Playwright полезут в домашний каталог того,
+кто набрал `sudo`.
+
 `git clone` требует пустой каталог. Если `/opt/magicrust-bot` уже создан и не пуст
-(например, `adduser` положил туда файлы из `/etc/skel` или код уже переносили через
-rsync), подключите репозиторий к существующему каталогу:
+(`adduser` положил туда файлы из `/etc/skel`, или код уже переносили через rsync),
+подключите репозиторий к существующему каталогу:
 
 ```bash
 sudo -u magicrust -H git -C /opt/magicrust-bot init
 sudo -u magicrust -H git -C /opt/magicrust-bot remote add origin {REPO}
-sudo -u magicrust -H git -C /opt/magicrust-bot fetch --depth 1 origin main
-sudo -u magicrust -H git -C /opt/magicrust-bot reset --hard origin/main
+sudo -u magicrust -H git -C /opt/magicrust-bot fetch --depth 1 origin master
+sudo -u magicrust -H git -C /opt/magicrust-bot reset --hard origin/master
 ```
 
-`reset --hard` затрагивает только файлы из репозитория: `.env`, `state/` и `venv/`
-он не тронет, потому что они в `.gitignore`.
+Ветка здесь `master` — подставьте свою, если в репозитории она называется иначе;
+`git branch -r` покажет список.
 
-Обновление кода потом:
+`reset --hard` трогает только файлы из репозитория: `.env`, `state/` и `venv/` он не
+видит, они в `.gitignore`. Так что сессия сайта и расписание переживают обновление.
+
+Чтобы GitHub не спрашивал логин и токен на каждый `fetch`, заведите deploy key:
 
 ```bash
-sudo -u magicrust -H git -C /opt/magicrust-bot pull
-sudo systemctl restart magicrust-telegram.service
+sudo -u magicrust -H ssh-keygen -t ed25519 -N '' -f /opt/magicrust-bot/.ssh/id_ed25519
+sudo cat /opt/magicrust-bot/.ssh/id_ed25519.pub
 ```
 
-Перезапуск нужен только сервису Telegram — он висит постоянно. `magicrust-case`
-отрабатывает по таймеру и подхватит новый код на следующем запуске сам.
-
-Команды идут от имени `magicrust`, чтобы файлы остались с правильным владельцем,
-а git не ругался на `dubious ownership`. Для приватного репозитория понадобится
-deploy key: сгенерируйте ключ через `sudo -u magicrust -H ssh-keygen -t ed25519`
-и добавьте `/opt/magicrust-bot/.ssh/id_ed25519.pub` в настройки репозитория.
-Для публичного достаточно `https://`-ссылки.
-
-#### Вариант Б: копированием по SSH
-
-Если репозитория нет. Если сервер описан в `~/.ssh/config`, указывайте имя алиаса,
-а не IP: блок `Host` срабатывает только на алиас, поэтому с голым адресом rsync уйдёт
-на порт 22 и оборвётся на `kex_exchange_identification`.
+Содержимое добавьте в Deploy keys репозитория, затем переключите remote на SSH:
 
 ```bash
-rsync -av --exclude venv --exclude state --exclude .env --exclude __pycache__ \
-  ~/magicrust/ {HOST}:/tmp/magicrust-bot/
+sudo -u magicrust -H git -C /opt/magicrust-bot remote set-url origin git@github.com:USER/REPO.git
 ```
 
-`.env` исключён намеренно: в `/tmp` он был бы доступен всем пользователям сервера.
-Его переносим отдельно, уже в конце установки.
-
-```bash
-sudo cp -rT /tmp/magicrust-bot /opt/magicrust-bot
-sudo chown -R magicrust:magicrust /opt/magicrust-bot
-```
-
-#### Дальше одинаково для обоих вариантов
+### 2.3. Окружение и секреты
 
 ```bash
 sudo -u magicrust -H python3 -m venv /opt/magicrust-bot/venv
@@ -159,8 +143,8 @@ sudo /opt/magicrust-bot/venv/bin/playwright install-deps chromium
 sudo -u magicrust -H /opt/magicrust-bot/venv/bin/playwright install chromium
 ```
 
-Теперь `.env` — прямо в конечный каталог, минуя `/tmp`, и с правами `600`
-(в нём токен Telegram-бота):
+`.env` в репозиторий не попадает — переносим его отдельно, прямо в конечный каталог
+и с правами `600` (в нём токен Telegram-бота):
 
 ```bash
 scp ~/magicrust/.env {HOST}:~/.env.magicrust
@@ -174,7 +158,7 @@ ssh {HOST} 'sudo install -o magicrust -g magicrust -m 600 ~/.env.magicrust /opt/
 sudo sed -i 's/^HEADLESS=.*/HEADLESS=1/' /opt/magicrust-bot/.env
 ```
 
-### 2.2. Перенос сессии
+### 2.4. Перенос сессии
 
 На локальной машине:
 
@@ -206,7 +190,7 @@ x11vnc -display :99 -localhost -nopw -forever &
 sudo -u magicrust -H env DISPLAY=:99 HEADLESS=0 /opt/magicrust-bot/venv/bin/python /opt/magicrust-bot/bot.py login
 ```
 
-### 2.3. Автозапуск
+### 2.5. Автозапуск
 
 ```bash
 # Файлы перечислены явно: маску раскрывает ваш шелл, а он каталог magicrust не читает.
@@ -227,9 +211,79 @@ systemctl list-timers magicrust-case.timer
 sudo journalctl -u magicrust-case.service -n 50
 ```
 
+В колонке `NEXT` должно стоять конкретное время. Если там `n/a`, а `systemctl status`
+показывает `active (elapsed)` — таймер больше не сработает, см. таблицу в конце.
+
+### 2.6. Запасной вариант: копирование по SSH
+
+Если репозитория нет. Обновлять потом придётся вручную тем же способом, поэтому вариант
+с git удобнее. Когда сервер описан в `~/.ssh/config`, указывайте имя алиаса, а не IP:
+блок `Host` срабатывает только на алиас, поэтому с голым адресом rsync уйдёт на порт 22
+и оборвётся на `kex_exchange_identification`.
+
+```bash
+rsync -av --exclude venv --exclude state --exclude .env --exclude __pycache__ \
+  ~/magicrust/ {HOST}:/tmp/magicrust-bot/
+```
+
+`.env` исключён намеренно: в `/tmp` он был бы доступен всем пользователям сервера.
+
+```bash
+sudo cp -rT /tmp/magicrust-bot /opt/magicrust-bot
+sudo chown -R magicrust:magicrust /opt/magicrust-bot
+```
+
+Дальше — те же шаги 2.3–2.5, что и при установке из git.
+
 ---
 
-## 3. Уведомления в Telegram (необязательно)
+## 3. Обновление кода
+
+### На своей машине
+
+Сначала проверьте, что уходит в коммит: `.env` и `state/` перечислены в `.gitignore`,
+токен и сессия остаться должны за бортом.
+
+```bash
+cd ~/magicrust && git status --short
+```
+
+```bash
+cd ~/magicrust && git add -A && git commit -m "что изменилось" && git push origin master
+```
+
+### На сервере
+
+Не `pull`, а `fetch` + `reset --hard`: серверу не нужны слияния, нужно точное совпадение
+с репозиторием. Заодно это обходит `no tracking information`, если репозиторий
+подключался через `init`, а не `clone`.
+
+```bash
+sudo -u magicrust -H git -C /opt/magicrust-bot fetch --depth 1 origin master && sudo -u magicrust -H git -C /opt/magicrust-bot reset --hard origin/master
+```
+
+Что делать после, зависит от того, что менялось в коммите:
+
+| Что менялось | Что сделать |
+|---|---|
+| только код `bot.py` | ничего, таймер подхватит на следующем тике |
+| `systemd/*` | скопировать юниты в `/etc/systemd/system/` и `sudo systemctl daemon-reload` |
+| `requirements.txt` | `sudo -u magicrust -H /opt/magicrust-bot/venv/bin/pip install -r /opt/magicrust-bot/requirements.txt` |
+| логика Telegram-бота | `sudo systemctl restart magicrust-telegram.service` |
+
+Юниты одной командой, если они менялись:
+
+```bash
+sudo cp /opt/magicrust-bot/systemd/magicrust-case.service /opt/magicrust-bot/systemd/magicrust-case.timer /opt/magicrust-bot/systemd/magicrust-telegram.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart magicrust-case.timer
+```
+
+`magicrust-case` перезапускать не нужно — это `oneshot`, он завершается сам и
+на следующем тике таймера стартует уже с новым кодом. А `magicrust-telegram` висит
+постоянно, поэтому новый код увидит только после `restart`.
+
+---
+
+## 4. Уведомления в Telegram (необязательно)
 
 Создайте бота у [@BotFather](https://t.me/BotFather), узнайте свой chat id у
 [@userinfobot](https://t.me/userinfobot) и впишите в `.env`:
