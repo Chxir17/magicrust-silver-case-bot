@@ -30,7 +30,8 @@ GREETING = (
 )
 
 LOGIN_HELP = (
-    "Вход в Steam делается на вашем компьютере"
+    "Вход в Steam делается на вашем компьютере: на сервере нет графической\n"
+    "оболочки, а Steam Guard просит код вручную.\n\n"
     "1. ./scripts/mr login\n"
     "2. ./scripts/mr export-cookies state/cookies.json\n"
     "3. Пришлите cookies.json сюда файлом — я его подключу.\n\n"
@@ -202,12 +203,22 @@ def publish_menu(owner: str) -> None:
     tg_api("setMyCommands", commands=commands)
 
 
+def run_ack(args: list[str]) -> str | None:
+    """Подтверждение перед долгой попыткой. Если ждать нечего — не шлём его."""
+    if any(word.lower() in admin.FORCE_WORDS for word in args):
+        return "Пробую открыть кейс, это займёт до минуты…"
+    nxt = parse_dt(read_state().get("next_attempt"))
+    if nxt and nxt > now():
+        return None                                       # ответ придёт мгновенно
+    return "Пробую открыть кейс, это займёт до минуты…"
+
+
 SLOW_COMMANDS = {
-    "/run": ("Запускаю попытку, это займёт до минуты…", lambda args: admin.attempt("force" in args)),
-    "/check": ("Проверяю сессию через браузер…", lambda args: admin.status()),
+    "/run": (run_ack, admin.attempt),
+    "/check": ("Проверяю сессию через браузер…", lambda args: admin.check()),
     "/timer": ("Смотрю расписание…", lambda args: admin.timer()),
-    "/restart": ("Перечитываю юниты…", lambda args: admin.restart()),
-    "/update": ("Обновляю код…", lambda args: admin.update()),
+    "/restart": ("Перечитываю юниты и перезапускаю…", lambda args: admin.restart()),
+    "/update": ("Обновляю код из репозитория…", lambda args: admin.update()),
 }
 
 #  Опрос
@@ -285,8 +296,11 @@ def answer_update(update: dict, owner: str) -> None:
 
     if command in SLOW_COMMANDS:
         ack, action = SLOW_COMMANDS[command]
-        notify(ack, chat_id=chat_id)
-        notify(action(parts[1:]), chat_id=chat_id)
+        args = parts[1:]
+        message = ack(args) if callable(ack) else ack
+        if message:
+            notify(message, chat_id=chat_id)
+        notify(action(args), chat_id=chat_id)
         return
 
     notify(handle_command(text), chat_id=chat_id)

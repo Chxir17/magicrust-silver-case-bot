@@ -4,52 +4,110 @@
 Привилегированные (`restart`, `update`) уходят через `sudo magicrust-admin` —
 отдельный root-скрипт с двумя разрешёнными действиями. Пока не выполнен
 scripts/enable-remote-admin.sh, они возвращают понятный отказ.
+
+Ответы отсюда идут человеку в чат, а не в журнал: служебные префиксы строк
+срезаются, код возврата показывается только при ошибке.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
 from .config import ROOT, log
+from .fmt import human_delta, local, now, parse_dt
+from .state import attempt_status, read_state
 
 BOT = str(ROOT / "bot.py")
 ADMIN = "/usr/local/sbin/magicrust-admin"
 LIMIT = 3500                                    # запас до предела сообщения Telegram
 
+# «2026-08-11 01:17:59  INFO    текст» -> «текст»
+LOG_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+\w+\s+", re.M)
+
+# Как только не напишут «сделай всё равно»: принимаем любой из вариантов.
+FORCE_WORDS = {"force", "--force", "-f", "now", "сейчас", "давай"}
+
+# Строки прогресса, которые полезны в журнале, но не в переписке.
+NOISE = re.compile(r"^(запускаю Chromium|HEADLESS=0)")
+
+
+def strip_log_prefix(text: str) -> str:
+    return LOG_PREFIX.sub("", text).strip()
+
 
 def run_command(argv: list[str], timeout: int = 600) -> str:
-    """Запускает команду и возвращает её вывод в виде текста для чата."""
+    """Запускает команду и возвращает её вывод, пригодный для чата."""
     log.info("выполняю по команде из Telegram: %s", " ".join(argv))
     try:
         done = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout, cwd=str(ROOT)
         )
     except FileNotFoundError:
-        return f"Не найдено: {argv[0]}"
+        return f"Не нашёл программу {argv[0]}"
     except subprocess.TimeoutExpired:
-        return f"Команда не уложилась в {timeout} с и была прервана."
+        return f"Команда не уложилась в {timeout // 60} мин и была прервана."
 
-    output = (done.stdout + done.stderr).strip() or "(без вывода)"
+    output = strip_log_prefix(done.stdout + done.stderr) or "Готово."
     if len(output) > LIMIT:
         output = "…\n" + output[-LIMIT:]
-    return f"{output}\n\nКод возврата: {done.returncode}"
+    if done.returncode != 0:
+        output += f"\n\nКоманда завершилась с ошибкой (код {done.returncode})."
+    return output
 
 
-def attempt(force: bool) -> str:
-    argv = [sys.executable, BOT, "run"] + (["--force"] if force else [])
-    return run_command(argv)
+def attempt(args: list[str]) -> str:
+    """Попытка открыть кейс. Итог берём из состояния, а не из вывода процесса."""
+    force = any(word.lower() in FORCE_WORDS for word in args)
+
+    state = read_state()
+    nxt = parse_dt(state.get("next_attempt"))
+    if not force and nxt and nxt > now():
+        return (
+            f"Ещё рано: следующая попытка {local(nxt)}, через {human_delta(nxt)}.\n"
+            "Открыть прямо сейчас — /run force"
+        )
+
+    was_open = state.get("last_open")
+    raw = run_command([sys.executable, BOT, "run"] + (["--force"] if force else []))
+    fresh = read_state()
+
+    if fresh.get("last_open") != was_open:
+        return f"Кейс открыт — {fresh.get('last_win', 'без подробностей')}"
+
+    status = attempt_status(fresh).lower()
+    following = parse_dt(fresh.get("next_attempt"))
+    when = (
+        f"\nСледующая попытка {local(following)}, через {human_delta(following)}."
+        if following and following > now()
+        else ""
+    )
+
+    if "перезарядка" in status:
+        return "Кейс ещё на перезарядке." + when
+    if "сессия" in status:
+        return "Сессия истекла, нужен повторный вход. Как это сделать — /login"
+    return f"Открыть не получилось.\n\n{raw}"
 
 
-def status() -> str:
-    return run_command([sys.executable, BOT, "status"])
+def check() -> str:
+    """Полная проверка сессии: поднимает браузер и открывает сайт."""
+    output = run_command([sys.executable, BOT, "status"])
+    # Служебная строка про запуск браузера нужна в журнале, но не в чате.
+    lines = [line for line in output.splitlines() if not NOISE.match(line)]
+    # В терминале колонки выровнены пробелами, в чате это выглядит рвано.
+    return re.sub(r":[ ]{2,}", ": ", "\n".join(lines).strip())
 
 
 def timer() -> str:
-    return run_command(
+    output = run_command(
         ["systemctl", "list-timers", "magicrust-case.timer", "--no-pager"], timeout=30
     )
+    # Последняя строка «1 timers listed…» в чате не нужна.
+    lines = [line for line in output.splitlines() if "timers listed" not in line]
+    return "\n".join(lines).strip() or output
 
 
 def restart() -> str:
@@ -64,7 +122,7 @@ def privileged(action: str) -> str:
     """Действие через root-помощник. Без него — инструкция, а не ошибка."""
     if not os.path.exists(ADMIN):
         return (
-            "Команда требует прав root, помощник не установлен.\n"
+            "Для этой команды нужны права root, а помощник не установлен.\n"
             "Выполните на сервере:\n"
             "sudo /opt/magicrust-bot/scripts/enable-remote-admin.sh"
         )
