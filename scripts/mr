@@ -54,12 +54,14 @@ case "${1:-}" in
     restart)
         sudo cp "$ROOT"/systemd/magicrust-case.service \
                 "$ROOT"/systemd/magicrust-case.timer /etc/systemd/system/
-        [[ -f "$ROOT/systemd/magicrust-telegram.service" ]] &&
+        if [[ -f "$ROOT/systemd/magicrust-telegram.service" ]]; then
             sudo cp "$ROOT/systemd/magicrust-telegram.service" /etc/systemd/system/
+        fi
         sudo systemctl daemon-reload
         sudo systemctl restart magicrust-case.timer
-        systemctl is-enabled magicrust-telegram.service >/dev/null 2>&1 &&
+        if systemctl is-enabled magicrust-telegram.service >/dev/null 2>&1; then
             sudo systemctl restart magicrust-telegram.service
+        fi
         systemctl list-timers magicrust-case.timer --no-pager
         ;;
     update)
