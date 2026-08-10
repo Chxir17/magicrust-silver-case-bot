@@ -129,8 +129,8 @@ state/                профиль браузера, состояние, ло�
 Подойдёт Debian или Ubuntu с 1 ГБ оперативной памяти.
 
 ```bash
-git clone <адрес-репозитория> /tmp/mr-install
-sudo /tmp/mr-install/scripts/install.sh <адрес-репозитория>
+git clone https://github.com/Chxir17/magicrust-silver-case-bot.git /tmp/mr-install
+sudo /tmp/mr-install/scripts/install.sh https://github.com/Chxir17/magicrust-silver-case-bot.git
 ```
 
 Скрипт выполняет:

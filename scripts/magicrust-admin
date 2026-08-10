@@ -12,8 +12,9 @@ case "${1:-}" in
     restart)
         cp "$DIR/systemd/magicrust-case.service" \
            "$DIR/systemd/magicrust-case.timer" /etc/systemd/system/
-        [[ -f "$DIR/systemd/magicrust-telegram.service" ]] &&
+        if [[ -f "$DIR/systemd/magicrust-telegram.service" ]]; then
             cp "$DIR/systemd/magicrust-telegram.service" /etc/systemd/system/
+        fi
         systemctl daemon-reload
         systemctl restart magicrust-case.timer
         systemctl list-timers magicrust-case.timer --no-pager
