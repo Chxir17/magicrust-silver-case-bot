@@ -158,6 +158,9 @@ def handle_command(text: str) -> str:
         return tail_log(int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 15)
     if command == "/login":
         return LOGIN_HELP
+    if command == "/version":
+        known = ", ".join(sorted(name for name, _ in COMMAND_MENU))
+        return f"Версия: {admin.version()}\nЗнаю команды: {known}"
     return "Не знаю такой команды. /start — список того, что умею."
 
 COMMAND_MENU = [
@@ -171,6 +174,7 @@ COMMAND_MENU = [
     ("restart", "Перечитать юниты и перезапустить"),
     ("update", "Обновить код из репозитория"),
     ("login", "Как перенести сессию Steam"),
+    ("version", "Какая версия развёрнута"),
     ("help", "Список команд"),
 ]
 

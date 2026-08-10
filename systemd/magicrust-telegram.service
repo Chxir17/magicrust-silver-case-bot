@@ -12,7 +12,10 @@ ExecStart=/opt/magicrust-bot/venv/bin/python /opt/magicrust-bot/bot.py telegram
 Restart=always
 RestartSec=15
 
-NoNewPrivileges=true
+# NoNewPrivileges здесь намеренно не выставлен: этот флаг запрещает процессу
+# повышать права, а sudo — setuid-программа, и команды /restart и /update
+# перестают работать с ошибкой «no new privileges flag is set».
+# Если эти команды не нужны, верните NoNewPrivileges=true — остальное работает.
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only

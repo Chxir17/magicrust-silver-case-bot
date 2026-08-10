@@ -38,23 +38,34 @@ def strip_log_prefix(text: str) -> str:
     return LOG_PREFIX.sub("", text).strip()
 
 
-def run_command(argv: list[str], timeout: int = 600) -> str:
-    """Запускает команду и возвращает её вывод, пригодный для чата."""
+def execute(argv: list[str], timeout: int = 600) -> tuple[int | None, str]:
+    """Запускает команду и возвращает код возврата и очищенный вывод.
+
+    Код возврата — надёжнее разбора текста: bot.py возвращает 0 при успехе или
+    перезарядке, 2 если сессия умерла, 3 при непонятном ответе сайта.
+    """
     log.info("выполняю по команде из Telegram: %s", " ".join(argv))
     try:
         done = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout, cwd=str(ROOT)
         )
     except FileNotFoundError:
-        return f"Не нашёл программу {argv[0]}"
+        return None, f"Не нашёл программу {argv[0]}"
     except subprocess.TimeoutExpired:
-        return f"Команда не уложилась в {timeout // 60} мин и была прервана."
+        return None, f"Команда не уложилась в {timeout // 60} мин и была прервана."
 
-    output = strip_log_prefix(done.stdout + done.stderr) or "Готово."
+    output = strip_log_prefix(done.stdout + done.stderr)
     if len(output) > LIMIT:
         output = "…\n" + output[-LIMIT:]
-    if done.returncode != 0:
-        output += f"\n\nКоманда завершилась с ошибкой (код {done.returncode})."
+    return done.returncode, output
+
+
+def run_command(argv: list[str], timeout: int = 600) -> str:
+    """То же, но одной строкой для чата: код показываем только при ошибке."""
+    code, output = execute(argv, timeout)
+    output = output or "Готово."
+    if code:
+        output += f"\n\nКоманда завершилась с ошибкой (код {code})."
     return output
 
 
@@ -71,13 +82,9 @@ def attempt(args: list[str]) -> str:
         )
 
     was_open = state.get("last_open")
-    raw = run_command([sys.executable, BOT, "run"] + (["--force"] if force else []))
+    code, raw = execute([sys.executable, BOT, "run"] + (["--force"] if force else []))
     fresh = read_state()
 
-    if fresh.get("last_open") != was_open:
-        return f"Кейс открыт — {fresh.get('last_win', 'без подробностей')}"
-
-    status = attempt_status(fresh).lower()
     following = parse_dt(fresh.get("next_attempt"))
     when = (
         f"\nСледующая попытка {local(following)}, через {human_delta(following)}."
@@ -85,11 +92,16 @@ def attempt(args: list[str]) -> str:
         else ""
     )
 
-    if "перезарядка" in status:
-        return "Кейс ещё на перезарядке." + when
-    if "сессия" in status:
-        return "Сессия истекла, нужен повторный вход. Как это сделать — /login"
-    return f"Открыть не получилось.\n\n{raw}"
+    if fresh.get("last_open") != was_open:
+        return f"Кейс открыт — {fresh.get('last_win', 'без подробностей')}." + when
+    if code == 2:
+        return "Не вышло: сессия истекла, нужен повторный вход. Как это сделать — /login"
+    if code == 0 and "перезарядка" in attempt_status(fresh).lower():
+        return "Не вышло: кейс ещё на перезарядке." + when
+
+    # Что-то незнакомое — показываем, что сказал сам бот.
+    details = raw or "процесс ничего не написал"
+    return f"Не вышло, кейс не открылся.\n\n{details}" + when
 
 
 def check() -> str:
@@ -108,6 +120,17 @@ def timer() -> str:
     # Последняя строка «1 timers listed…» в чате не нужна.
     lines = [line for line in output.splitlines() if "timers listed" not in line]
     return "\n".join(lines).strip() or output
+
+
+def version() -> str:
+    """Какая ревизия развёрнута — чтобы не гадать, доехало ли обновление."""
+    code, output = execute(
+        ["git", "-C", str(ROOT), "log", "-1", "--format=%h %s (%cd)", "--date=short"],
+        timeout=30,
+    )
+    if code:
+        return "каталог не подключён к git"
+    return output
 
 
 def restart() -> str:
