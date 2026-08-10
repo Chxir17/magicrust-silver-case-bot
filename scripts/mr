@@ -29,10 +29,14 @@ die() { echo "Ошибка: $*" >&2; exit 1; }
 
 # Запускает bot.py: на сервере — от имени magicrust, локально — напрямую.
 run_bot() {
-    [[ -x "$PYTHON" ]] || die "нет venv в $ROOT/venv — запустите scripts/install.sh"
     if [[ $ON_SERVER == 1 && $(id -un) != "$SERVER_USER" ]]; then
+        # Проверять наличие venv нужно тоже под magicrust: каталог с правами 750,
+        # и обычный пользователь внутрь не заглядывает, даже если файл там есть.
+        sudo -u "$SERVER_USER" -H test -x "$PYTHON" ||
+            die "нет venv в $ROOT/venv — запустите scripts/install.sh"
         sudo -u "$SERVER_USER" -H "$PYTHON" "$ROOT/bot.py" "$@"
     else
+        [[ -x "$PYTHON" ]] || die "нет venv в $ROOT/venv — запустите scripts/dev-setup.sh"
         "$PYTHON" "$ROOT/bot.py" "$@"
     fi
 }
