@@ -1,0 +1,22 @@
+[Unit]
+Description=Magic Rust — ответы на команды в Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=magicrust
+WorkingDirectory=/opt/magicrust-bot
+EnvironmentFile=-/opt/magicrust-bot/.env
+ExecStart=/opt/magicrust-bot/venv/bin/python /opt/magicrust-bot/bot.py telegram
+Restart=always
+RestartSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/magicrust-bot/state
+
+[Install]
+WantedBy=multi-user.target

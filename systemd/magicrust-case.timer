@@ -1,0 +1,14 @@
+[Unit]
+Description=Проверять кейс Magic Rust каждые 20 минут
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=20min
+# Разброс, чтобы запросы не шли секунда в секунду.
+RandomizedDelaySec=240
+# Догнать пропущенные запуски, если VPS был выключен.
+Persistent=true
+Unit=magicrust-case.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,6 @@
+.env
+state/
+venv/
+__pycache__/
+*.pyc
+.claude

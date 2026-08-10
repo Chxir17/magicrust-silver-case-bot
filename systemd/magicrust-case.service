@@ -1,0 +1,19 @@
+[Unit]
+Description=Magic Rust — открытие бесплатного кейса с серебром
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=magicrust
+WorkingDirectory=/opt/magicrust-bot
+EnvironmentFile=-/opt/magicrust-bot/.env
+ExecStart=/opt/magicrust-bot/venv/bin/python /opt/magicrust-bot/bot.py run
+TimeoutStartSec=300
+
+# Немного изоляции — боту нужен только свой каталог.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/magicrust-bot/state
