@@ -6,17 +6,37 @@ import time
 import urllib.parse
 import urllib.request
 
-from .config import LOG_FILE, TG_OFFSET_FILE, log
+from . import admin
+from .config import LOG_FILE, STATE_DIR, TG_OFFSET_FILE, log
 from .fmt import amount, human_delta, local, now, parse_dt, plural
 from .state import attempt_status, read_state
 
 GREETING = (
     "Бот кейса Magic Rust на связи.\n"
     "Открываю «Бесплатное серебро» раз в 10 часов и пишу сюда результат.\n\n"
+    "Что показать:\n"
     "/status — когда следующая попытка и сколько собрано\n"
     "/last — что выпало в прошлый раз\n"
     "/stats — история последних открытий\n"
-    "/log — последние строки журнала"
+    "/log — последние строки журнала\n"
+    "/timer — расписание таймера\n\n"
+    "Что сделать:\n"
+    "/run — попытаться открыть кейс сейчас\n"
+    "/run force — то же, не глядя на расписание\n"
+    "/check — полная проверка сессии через браузер\n"
+    "/restart — перечитать юниты и перезапустить\n"
+    "/update — обновить код из репозитория\n"
+    "/login — как перенести сессию Steam"
+)
+
+LOGIN_HELP = (
+    "Вход в Steam делается на вашем компьютере"
+    "1. ./scripts/mr login\n"
+    "2. ./scripts/mr export-cookies state/cookies.json\n"
+    "3. Пришлите cookies.json сюда файлом — я его подключу.\n\n"
+    "Файл содержит ключ доступа к аккаунту на сайте. Он пройдёт через серверы\n"
+    "Telegram, и после импорта я его удалю. Если это нежелательно — переносите\n"
+    "файл через scp, как описано в README."
 )
 
 
@@ -40,7 +60,6 @@ def tg_api(method: str, http_timeout: int = 20, **params):
 
 
 def notify(text: str, chat_id: str | None = None) -> None:
-    """Сообщение в Telegram, если заданы TG_TOKEN и TG_CHAT_ID."""
     target = chat_id or os.environ.get("TG_CHAT_ID")
     if not target:
         return
@@ -119,7 +138,9 @@ def tail_log(lines: int = 15) -> str:
 
 
 def handle_command(text: str) -> str:
-    command = text.strip().split()[0].split("@")[0].lower()
+    """Быстрые ответы: только чтение состояния, без запуска браузера."""
+    parts = text.strip().split()
+    command = parts[0].split("@")[0].lower()
     if command in ("/start", "/help"):
         return GREETING
     if command == "/status":
@@ -133,9 +154,18 @@ def handle_command(text: str) -> str:
     if command == "/stats":
         return stats_text()
     if command == "/log":
-        return tail_log()
+        return tail_log(int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 15)
+    if command == "/login":
+        return LOGIN_HELP
     return "Не знаю такой команды. /start — список того, что умею."
 
+SLOW_COMMANDS = {
+    "/run": ("Запускаю попытку, это займёт до минуты…", lambda args: admin.attempt("force" in args)),
+    "/check": ("Проверяю сессию через браузер…", lambda args: admin.status()),
+    "/timer": ("Смотрю расписание…", lambda args: admin.timer()),
+    "/restart": ("Перечитываю юниты…", lambda args: admin.restart()),
+    "/update": ("Обновляю код…", lambda args: admin.update()),
+}
 
 #  Опрос
 
@@ -192,12 +222,62 @@ def read_offset() -> int | None:
 
 def answer_update(update: dict, owner: str) -> None:
     message = update.get("message") or update.get("edited_message") or {}
-    text = (message.get("text") or "").strip()
     chat_id = str((message.get("chat") or {}).get("id", ""))
+    if chat_id != owner:
+        log.warning("сообщение от чужого чата %s пропущено", chat_id)
+        return
+
+    if message.get("document"):
+        notify(accept_cookies(message["document"]), chat_id=chat_id)
+        return
+
+    text = (message.get("text") or "").strip()
     if not text:
         return
-    if chat_id != owner:
-        log.warning("сообщение от чужого чата %s пропущено: %r", chat_id, text[:50])
-        return
+
+    parts = text.split()
+    command = parts[0].split("@")[0].lower()
     log.info("команда из Telegram: %s", text[:80])
+
+    if command in SLOW_COMMANDS:
+        ack, action = SLOW_COMMANDS[command]
+        notify(ack, chat_id=chat_id)
+        notify(action(parts[1:]), chat_id=chat_id)
+        return
+
     notify(handle_command(text), chat_id=chat_id)
+
+
+def accept_cookies(document: dict) -> str:
+    name = document.get("file_name") or ""
+    if not name.endswith(".json"):
+        return "Жду файл cookies.json. Как его получить — /login"
+    if (document.get("file_size") or 0) > 1_000_000:
+        return "Файл слишком большой для набора куки."
+
+    info = tg_api("getFile", file_id=document["file_id"])
+    if not info or not info.get("file_path"):
+        return "Не удалось забрать файл у Telegram."
+
+    token = os.environ.get("TG_TOKEN")
+    url = f"https://api.telegram.org/file/bot{token}/{info['file_path']}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            raw = response.read().decode("utf-8")
+        cookies = json.loads(raw)
+    except Exception as exc:                                
+        return f"Файл не читается: {exc}"
+
+    if not isinstance(cookies, list) or not all(isinstance(c, dict) for c in cookies):
+        return "Это не похоже на выгрузку куки: ожидался список объектов."
+
+    target = STATE_DIR / "cookies.json"
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    target.write_text(raw, encoding="utf-8")
+    target.chmod(0o600)
+    log.info("получен файл куки из Telegram: %d записей", len(cookies))
+
+    try:
+        return admin.import_cookies(str(target))
+    finally:
+        target.unlink(missing_ok=True)

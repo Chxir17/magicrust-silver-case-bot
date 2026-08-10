@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Привилегированные операции для Telegram-команд /restart и /update.
+#
+# Живёт в /usr/local/sbin, принадлежит root и в sudoers разрешён пользователю
+# magicrust только с двумя аргументами ниже. Устанавливается скриптом
+# scripts/enable-remote-admin.sh.
+set -euo pipefail
+
+DIR=/opt/magicrust-bot
+
+case "${1:-}" in
+    restart)
+        cp "$DIR/systemd/magicrust-case.service" \
+           "$DIR/systemd/magicrust-case.timer" /etc/systemd/system/
+        [[ -f "$DIR/systemd/magicrust-telegram.service" ]] &&
+            cp "$DIR/systemd/magicrust-telegram.service" /etc/systemd/system/
+        systemctl daemon-reload
+        systemctl restart magicrust-case.timer
+        systemctl list-timers magicrust-case.timer --no-pager
+        ;;
+    update)
+        # Перезапуск Telegram-сервиса внутри update.sh оборвёт этот же процесс,
+        # поэтому запускаем отвязанно и сразу отвечаем в чат.
+        setsid "$DIR/scripts/update.sh" >/var/log/magicrust-update.log 2>&1 < /dev/null &
+        echo "Обновление запущено. Итог: /log или /var/log/magicrust-update.log"
+        ;;
+    *)
+        echo "Использование: magicrust-admin {restart|update}" >&2
+        exit 2
+        ;;
+esac

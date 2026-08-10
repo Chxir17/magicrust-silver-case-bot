@@ -19,7 +19,7 @@ from .config import (
     setup_logging,
 )
 from .fmt import human_delta, local, now, parse_dt
-from .state import attempt_status, read_state, schedule_next, write_state
+from .state import attempt_status, read_state, schedule_next, single_run, write_state
 from .telegram import poll
 
 
@@ -89,12 +89,16 @@ def cmd_run(args) -> int:
     if not headless_flag():
         log.warning("HEADLESS=0 — окно браузера видимое, не закрывайте его до конца прогона")
 
-    with sync_playwright() as playwright:
-        context = browser_context(playwright, headless=headless_flag())
-        try:
-            return attempt_open(context)
-        finally:
-            context.close()
+    try:
+        with single_run(), sync_playwright() as playwright:
+            context = browser_context(playwright, headless=headless_flag())
+            try:
+                return attempt_open(context)
+            finally:
+                context.close()
+    except RuntimeError as exc:
+        log.warning("%s — пропускаю запуск", exc)
+        return 0
 
 
 def cmd_telegram(args) -> int:
