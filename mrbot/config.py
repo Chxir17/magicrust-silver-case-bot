@@ -35,7 +35,7 @@ RETRY_ON_NO_SESSION = 90        # сессия умерла, нужен ручн
 
 HISTORY_LEN = 10                # сколько последних открытий помним для /stats
 
-log = logging.getLogger("magicrust")
+log = logging.getLogger("mrbot")
 
 
 def load_env() -> None:
