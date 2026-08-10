@@ -114,6 +114,16 @@ def write_state(**updates) -> dict:
     return state
 
 
+def attempt_status(state: dict) -> str:
+    """Итог последней попытки — успех, перезарядка, ошибка.
+
+    Не путать с `last_win`: там лежит только то, что реально выпало, и
+    неудачная попытка это значение не затирает. `last_result` — старое общее
+    поле, читаем его ради состояний, записанных прошлой версией бота.
+    """
+    return state.get("last_status") or state.get("last_result") or ""
+
+
 def schedule_next(minutes: int, jitter: int = 5) -> str:
     """Ставит следующую попытку через N минут (+ случайный разброс)."""
     delay = minutes + random.uniform(0, jitter)
@@ -393,8 +403,10 @@ def cmd_status(_args) -> int:
     print(f"Сессия:          {'активна — ' + nickname if authorized else 'НЕТ (нужен python bot.py login)'}")
     last = parse_dt(state.get("last_open"))
     print(f"Последний кейс:  {last.astimezone().strftime('%d.%m %H:%M') if last else 'ещё не открывали'}")
-    if state.get("last_result"):
-        print(f"Результат:       {state['last_result']}")
+    if state.get("last_win"):
+        print(f"Выпало:          {state['last_win']}")
+    if attempt_status(state):
+        print(f"Итог попытки:    {attempt_status(state)}")
     nxt = parse_dt(state.get("next_attempt"))
     if nxt:
         print(f"Следующая проба: {nxt.astimezone().strftime('%d.%m %H:%M')} (через {human_delta(nxt)})")
@@ -424,7 +436,7 @@ def attempt_open(context) -> int:
 
     if not is_logged_in(page):
         log.error("сессия недействительна — нужен повторный вход (python bot.py login)")
-        write_state(last_result="сессия истекла")
+        write_state(last_status="сессия истекла")
         schedule_next(RETRY_ON_NO_SESSION)
         notify("Magic Rust: сессия истекла, нужен повторный вход через Steam")
         return 2
@@ -441,7 +453,7 @@ def attempt_open(context) -> int:
 
     if page.locator(AUTH_BTN).count() > 0:
         log.error("в модалке кнопка входа — сессия протухла")
-        write_state(last_result="сессия истекла")
+        write_state(last_status="сессия истекла")
         schedule_next(RETRY_ON_NO_SESSION)
         notify("Magic Rust: сессия истекла, нужен повторный вход через Steam")
         return 2
@@ -451,7 +463,7 @@ def attempt_open(context) -> int:
         text = page.locator(MODAL).inner_text().strip()
         log.error("кнопка «Открыть кейс» не найдена. Текст модалки:\n%s", text[:500])
         page.screenshot(path=str(STATE_DIR / "last_error.png"), full_page=False)
-        write_state(last_result="кнопка не найдена")
+        write_state(last_status="кнопка не найдена")
         schedule_next(RETRY_ON_ERROR)
         return 3
 
@@ -499,7 +511,8 @@ def attempt_open(context) -> int:
         log.info("УСПЕХ: %s", result)
         write_state(
             last_open=now().isoformat(),
-            last_result=result,
+            last_win=result,                                  # что выпало — только при успехе
+            last_status=result,                               # итог последней попытки, любой
             last_payload=payload,
             opens=read_state().get("opens", 0) + 1,
         )
@@ -508,7 +521,7 @@ def attempt_open(context) -> int:
         return 0
 
     if COOLDOWN_WORDS.search(f"{message} {body} {modal_text}") or status in (403, 419, 429):
-        write_state(last_result=f"перезарядка: {message}" if message else "перезарядка")
+        write_state(last_status=f"перезарядка: {message}" if message else "перезарядка")
         last = parse_dt(read_state().get("last_open"))
         target = last + timedelta(minutes=COOLDOWN_MIN + COOLDOWN_PAD) if last else None
         if target and target > now():
@@ -520,7 +533,7 @@ def attempt_open(context) -> int:
         return 0
 
     log.error("непонятный результат (HTTP %s), скриншот: %s", status, STATE_DIR / "last_open.png")
-    write_state(last_result=f"ошибка HTTP {status}")
+    write_state(last_status=f"ошибка HTTP {status}")
     schedule_next(RETRY_ON_ERROR)
     return 3
 
@@ -553,9 +566,9 @@ def status_text() -> str:
             else "Следующая попытка: при ближайшем запуске таймера"
         )
     if state.get("opens"):
-        lines.append(f"Всего открыто: {state['opens']}")
-    if state.get("last_result"):
-        lines.append(f"Статус: {state['last_result']}")
+        lines.append(f"Всего открыто кейсов: {state['opens']}")
+    if attempt_status(state):
+        lines.append(f"Итог последней попытки: {attempt_status(state)}")
     return "\n".join(lines)
 
 
@@ -573,8 +586,11 @@ def handle_command(text: str) -> str:
     if command == "/status":
         return status_text()
     if command == "/last":
-        result = read_state().get("last_result")
-        return f"Прошлый результат: {result}" if result else "Кейс ещё не открывали."
+        state = read_state()
+        win, opened = state.get("last_win"), parse_dt(state.get("last_open"))
+        if not win:
+            return "Кейс ещё не открывали."
+        return f"{local(opened)} — {win}" if opened else f"Прошлый раз: {win}"
     if command == "/log":
         return tail_log()
     return "Не знаю такой команды. /start — список того, что умею."
