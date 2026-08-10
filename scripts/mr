@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# mr — короткая обёртка вместо
+#   sudo -u magicrust -H /opt/magicrust-bot/venv/bin/python /opt/magicrust-bot/bot.py ...
+#
+# Сам определяет, где запущен: на сервере уходит под пользователя magicrust,
+# локально работает с venv рядом с исходниками.
+#
+#   mr status | mr run | mr run --force | mr login | mr telegram --once
+#   mr logs [N]   последние строки журнала сервиса
+#   mr timer      когда следующий запуск
+#   mr restart    перечитать юниты и перезапустить
+#   mr update     подтянуть код из git и применить
+set -euo pipefail
+
+SERVER_DIR=/opt/magicrust-bot
+SERVER_USER=magicrust
+
+if [[ -d "$SERVER_DIR" ]]; then
+    ROOT=$SERVER_DIR
+    ON_SERVER=1
+else
+    ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    ON_SERVER=0
+fi
+
+PYTHON="$ROOT/venv/bin/python"
+
+die() { echo "Ошибка: $*" >&2; exit 1; }
+
+# Запускает bot.py: на сервере — от имени magicrust, локально — напрямую.
+run_bot() {
+    [[ -x "$PYTHON" ]] || die "нет venv в $ROOT/venv — запустите scripts/install.sh"
+    if [[ $ON_SERVER == 1 && $(id -un) != "$SERVER_USER" ]]; then
+        sudo -u "$SERVER_USER" -H "$PYTHON" "$ROOT/bot.py" "$@"
+    else
+        "$PYTHON" "$ROOT/bot.py" "$@"
+    fi
+}
+
+case "${1:-}" in
+    logs)
+        if [[ $ON_SERVER == 1 ]]; then
+            sudo journalctl -u magicrust-case.service -n "${2:-40}" --no-pager
+        else
+            tail -n "${2:-40}" "$ROOT/state/bot.log"
+        fi
+        ;;
+    timer)
+        command -v systemctl >/dev/null || die "systemd есть только на сервере"
+        systemctl list-timers magicrust-case.timer --no-pager
+        echo
+        systemctl status magicrust-case.timer --no-pager | head -5
+        ;;
+    restart)
+        sudo cp "$ROOT"/systemd/magicrust-case.service \
+                "$ROOT"/systemd/magicrust-case.timer /etc/systemd/system/
+        [[ -f "$ROOT/systemd/magicrust-telegram.service" ]] &&
+            sudo cp "$ROOT/systemd/magicrust-telegram.service" /etc/systemd/system/
+        sudo systemctl daemon-reload
+        sudo systemctl restart magicrust-case.timer
+        systemctl is-enabled magicrust-telegram.service >/dev/null 2>&1 &&
+            sudo systemctl restart magicrust-telegram.service
+        systemctl list-timers magicrust-case.timer --no-pager
+        ;;
+    update)
+        exec "$ROOT/scripts/update.sh"
+        ;;
+    ""|-h|--help)
+        sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        run_bot "$@"
+        ;;
+esac
