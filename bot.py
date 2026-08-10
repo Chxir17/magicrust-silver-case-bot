@@ -62,6 +62,8 @@ RETRY_ON_COOLDOWN = 25          # ещё рано — попробуем поз�
 RETRY_ON_ERROR = 20             # непонятная ошибка
 RETRY_ON_NO_SESSION = 90        # сессия умерла, нужен ручной re-login
 
+HISTORY_LEN = 10                # сколько последних открытий помним для /stats
+
 log = logging.getLogger("magicrust")
 
 
@@ -198,6 +200,27 @@ def notify(text: str, chat_id: str | None = None) -> None:
         text=text,
         disable_web_page_preview="true",
     )
+
+
+def plural(count: int, one: str, few: str, many: str) -> str:
+    """«1 открытие», «2 открытия», «5 открытий»."""
+    tail = abs(int(count)) % 100
+    if 11 <= tail <= 14:
+        return many
+    tail %= 10
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
+def amount(value) -> str:
+    """1250 -> «1 250». Целые печатаем без хвоста .0."""
+    if value is None:
+        return "?"
+    number = int(value) if float(value).is_integer() else value
+    return f"{number:,}".replace(",", " ") if isinstance(number, int) else str(number)
 
 
 def scaled(ms: int) -> int:
@@ -555,14 +578,21 @@ def attempt_open(context) -> int:
 
     if status == 200 and payload is not None and not payload_is_error(payload):
         silver = find_silver(payload)
-        result = f"выпало {silver} серебра" if silver else "кейс открыт"
+        result = f"выпало {amount(silver)} серебра" if silver else "кейс открыт"
         log.info("УСПЕХ: %s", result)
+
+        state = read_state()
+        history = (state.get("history") or [])[-(HISTORY_LEN - 1):]
+        history.append({"at": now().isoformat(), "silver": silver})
         write_state(
             last_open=now().isoformat(),
             last_win=result,                                  # что выпало — только при успехе
             last_status=result,                               # итог последней попытки, любой
+            last_silver=silver,
+            silver_total=(state.get("silver_total") or 0) + (silver or 0),
+            history=history,
             last_payload=payload,
-            opens=read_state().get("opens", 0) + 1,
+            opens=state.get("opens", 0) + 1,
         )
         schedule_next(COOLDOWN_MIN + COOLDOWN_PAD, jitter=10)
         notify(f"Magic Rust: кейс открыт — {result}")
@@ -593,8 +623,9 @@ def attempt_open(context) -> int:
 GREETING = (
     "Бот кейса Magic Rust на связи.\n"
     "Открываю «Бесплатное серебро» раз в 10 часов и пишу сюда результат.\n\n"
-    "/status — когда следующая попытка\n"
+    "/status — когда следующая попытка и сколько собрано\n"
     "/last — что выпало в прошлый раз\n"
+    "/stats — история последних открытий\n"
     "/log — последние строки журнала"
 )
 
@@ -613,10 +644,46 @@ def status_text() -> str:
             if nxt > now()
             else "Следующая попытка: при ближайшем запуске таймера"
         )
+    if state.get("last_silver"):
+        lines.append(f"Последний раз выпало: {amount(state['last_silver'])} серебра")
     if state.get("opens"):
-        lines.append(f"Всего открыто кейсов: {state['opens']}")
+        total = state.get("silver_total")
+        line = f"Всего открыто кейсов: {state['opens']}"
+        if total:
+            line += f", собрано {amount(total)} серебра"
+        lines.append(line)
     if attempt_status(state):
         lines.append(f"Итог последней попытки: {attempt_status(state)}")
+    return "\n".join(lines)
+
+
+def stats_text() -> str:
+    state = read_state()
+    history = state.get("history") or []
+    if not history:
+        return "Открытий пока не было."
+
+    lines = [
+        f"Последние {len(history)} "
+        f"{plural(len(history), 'открытие', 'открытия', 'открытий')}:"
+    ]
+    for item in reversed(history):
+        opened = parse_dt(item.get("at"))
+        silver = item.get("silver")
+        when = local(opened) if opened else "—"
+        lines.append(f"  {when} — {amount(silver) + ' серебра' if silver else 'без числа в ответе'}")
+
+    known = [item["silver"] for item in history if item.get("silver")]
+    if known:
+        lines.append("")
+        lines.append(f"Среднее за открытие: {amount(round(sum(known) / len(known)))} серебра")
+        lines.append(f"Лучшее: {amount(max(known))}, худшее: {amount(min(known))}")
+    if state.get("silver_total"):
+        opens = state.get("opens", 0)
+        lines.append(
+            f"Всего собрано: {amount(state['silver_total'])} серебра "
+            f"за {opens} {plural(opens, 'кейс', 'кейса', 'кейсов')}"
+        )
     return "\n".join(lines)
 
 
@@ -639,6 +706,8 @@ def handle_command(text: str) -> str:
         if not win:
             return "Кейс ещё не открывали."
         return f"{local(opened)} — {win}" if opened else f"Прошлый раз: {win}"
+    if command == "/stats":
+        return stats_text()
     if command == "/log":
         return tail_log()
     return "Не знаю такой команды. /start — список того, что умею."
