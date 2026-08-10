@@ -159,6 +159,49 @@ def handle_command(text: str) -> str:
         return LOGIN_HELP
     return "Не знаю такой команды. /start — список того, что умею."
 
+COMMAND_MENU = [
+    ("status", "Когда следующая попытка и сколько собрано"),
+    ("last", "Что выпало в прошлый раз"),
+    ("stats", "История последних открытий"),
+    ("run", "Попытаться открыть кейс сейчас"),
+    ("check", "Полная проверка сессии через браузер"),
+    ("timer", "Расписание таймера"),
+    ("log", "Последние строки журнала"),
+    ("restart", "Перечитать юниты и перезапустить"),
+    ("update", "Обновить код из репозитория"),
+    ("login", "Как перенести сессию Steam"),
+    ("help", "Список команд"),
+]
+
+
+def publish_menu(owner: str) -> None:
+    """Публикует подсказку по командам.
+
+    Меню показывается только владельцу: команды всё равно выполняются лишь для
+    него, а посторонним, наткнувшимся на бота в поиске, показывать нечего.
+    Если адресный вызов не прошёл, ставим общее меню — лучше так, чем никакого.
+    """
+    commands = json.dumps(
+        [{"command": name, "description": text} for name, text in COMMAND_MENU]
+    )
+    try:
+        scope = json.dumps({"type": "chat", "chat_id": int(owner)})
+    except ValueError:
+        scope = None
+
+    if scope and tg_api("setMyCommands", commands=commands, scope=scope) is not None:
+        tg_api(
+            "setMyCommands",
+            commands="[]",
+            scope=json.dumps({"type": "all_private_chats"}),
+        )
+        log.info("меню команд обновлено (%d команд)", len(COMMAND_MENU))
+        return
+
+    log.warning("не удалось задать меню для владельца, ставлю общее")
+    tg_api("setMyCommands", commands=commands)
+
+
 SLOW_COMMANDS = {
     "/run": ("Запускаю попытку, это займёт до минуты…", lambda args: admin.attempt("force" in args)),
     "/check": ("Проверяю сессию через браузер…", lambda args: admin.status()),
@@ -185,6 +228,7 @@ def poll(once: bool = False) -> int:
         log.error("Telegram не принял токен — проверьте TG_TOKEN")
         return 1
     log.info("слушаю Telegram как @%s, отвечаю только chat_id %s", me.get("username"), owner)
+    publish_menu(owner)
 
     offset = read_offset()
     poll_seconds = 0 if once else 50
