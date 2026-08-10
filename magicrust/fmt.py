@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from .texts import Time
+
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
@@ -20,9 +22,12 @@ def parse_dt(value: str | None) -> datetime | None:
 def human_delta(dt: datetime) -> str:
     seconds = int((dt - now()).total_seconds())
     if seconds <= 0:
-        return "сейчас"
+        return Time.NOW
     hours, rem = divmod(seconds, 3600)
-    return f"{hours} ч {rem // 60} мин" if hours else f"{rem // 60} мин"
+    minutes = rem // 60
+    if hours:
+        return Time.HOURS_MINUTES.format(hours=hours, minutes=minutes)
+    return Time.MINUTES.format(minutes=minutes)
 
 
 def local(dt: datetime) -> str:
@@ -32,7 +37,7 @@ def local(dt: datetime) -> str:
         dt = dt.astimezone(ZoneInfo(os.environ.get("MR_TZ", "Europe/Moscow")))
     except Exception:                                      
         dt = dt.astimezone()
-    return dt.strftime("%d.%m %H:%M")
+    return dt.strftime(Time.DATE_FORMAT)
 
 
 def plural(count: int, one: str, few: str, many: str) -> str:

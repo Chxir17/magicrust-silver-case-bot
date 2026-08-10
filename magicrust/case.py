@@ -1,5 +1,3 @@
-"""Открытие бесплатного кейса и разбор ответа сайта."""
-
 from __future__ import annotations
 
 import json

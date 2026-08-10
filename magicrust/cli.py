@@ -14,6 +14,7 @@ from .config import (
     RETRY_ON_ERROR,
     STATE_DIR,
     headless_flag,
+    launcher,
     load_env,
     log,
     setup_logging,
@@ -21,18 +22,11 @@ from .config import (
 from .fmt import human_delta, local, now, parse_dt
 from .state import attempt_status, read_state, schedule_next, single_run, write_state
 from .telegram import poll
+from .texts import Cli
 
 
 def cmd_login(_args) -> int:
-    print(
-        "\nОткроется окно браузера.\n"
-        "  1. Нажмите «Войти» → «Войти через Steam».\n"
-        "  2. Введите логин, пароль и код Steam Guard — сами, в окне браузера.\n"
-        "     Скрипт пароль не видит и не сохраняет: остаётся только cookie сайта.\n"
-        "  3. Дождитесь возврата на magicrust.gg — окно закроется само.\n"
-        "Заодно нажмите «Ok» в плашке про cookie: профиль это запомнит,\n"
-        "и она перестанет перекрывать страницу при автозапусках.\n"
-    )
+    print(Cli.LOGIN_STEPS)
     with sync_playwright() as playwright:
         context = browser_context(playwright, headless=False)
         page = goto_site(context)
@@ -44,13 +38,13 @@ def cmd_login(_args) -> int:
                     write_state(logged_in_at=now().isoformat())
                     page.wait_for_timeout(2000)
                     context.close()
-                    print("\nГотово. Проверьте: bot.py status\n")
+                    print(Cli.LOGIN_DONE.format(mr=launcher()))
                     return 0
             except Exception:                                 
                 pass
             time.sleep(2)
         context.close()
-    log.error("вход не завершён за 15 минут")
+    log.error(Cli.LOGIN_TIMEOUT)
     return 1
 
 
@@ -64,19 +58,20 @@ def cmd_status(_args) -> int:
         context.close()
 
     if authorized:
-        print(f"Сессия:          активна{' — ' + nickname if nickname else ''}")
+        suffix = Cli.SESSION_NICKNAME.format(nickname=nickname) if nickname else ""
+        print(Cli.SESSION_OK.format(nickname=suffix))
     else:
-        print("Сессия:          НЕТ (нужен bot.py login)")
+        print(Cli.SESSION_NONE.format(mr=launcher()))
 
     last = parse_dt(state.get("last_open"))
-    print(f"Последний кейс:  {local(last) if last else 'ещё не открывали'}")
+    print(Cli.STATUS_LAST_OPEN.format(when=local(last) if last else Cli.STATUS_NEVER))
     if state.get("last_win"):
-        print(f"Выпало:          {state['last_win']}")
+        print(Cli.STATUS_WIN.format(win=state["last_win"]))
     if attempt_status(state):
-        print(f"Итог попытки:    {attempt_status(state)}")
+        print(Cli.STATUS_ATTEMPT.format(status=attempt_status(state)))
     nxt = parse_dt(state.get("next_attempt"))
     if nxt:
-        print(f"Следующая проба: {local(nxt)} (через {human_delta(nxt)})")
+        print(Cli.STATUS_NEXT.format(when=local(nxt), left=human_delta(nxt)))
     return 0 if authorized else 1
 
 
@@ -114,8 +109,8 @@ def cmd_export_cookies(args) -> int:
         context.close()
     keep = [c for c in cookies if "magicrust" in c.get("domain", "")]
     target.write_text(json.dumps(keep, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Сохранено {len(keep)} куки → {target}")
-    print("Перенесите файл на VPS и выполните: bot.py import-cookies cookies.json")
+    print(Cli.COOKIES_SAVED.format(count=len(keep), path=target))
+    print(Cli.COOKIES_HINT)
     return 0
 
 
@@ -127,7 +122,7 @@ def cmd_import_cookies(args) -> int:
         page = open_site(context)
         ok = is_logged_in(page)
         context.close()
-    print("Сессия перенесена ✔" if ok else "Куки загружены, но сайт считает вас гостем — нужен login")
+    print(Cli.COOKIES_IMPORTED if ok else Cli.COOKIES_GUEST)
     return 0 if ok else 1
 
 

@@ -11,7 +11,6 @@ EnvironmentFile=-/opt/magicrust-bot/.env
 ExecStart=/opt/magicrust-bot/venv/bin/python /opt/magicrust-bot/bot.py run
 TimeoutStartSec=300
 
-# Немного изоляции — боту нужен только свой каталог.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

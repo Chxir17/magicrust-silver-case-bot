@@ -1,13 +1,8 @@
-"""Пути, селекторы сайта и настройки из окружения.
-
-Здесь всё, что меняется при переезде на другой сервер или при обновлении
-вёрстки magicrust.gg. Если сайт перерисуют, править нужно только селекторы.
-"""
-
 from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -66,6 +61,10 @@ def setup_logging() -> None:
     log.setLevel(logging.INFO)
     log.addHandler(stream)
     log.addHandler(file_handler)
+
+
+def launcher() -> str:
+    return "mr" if shutil.which("mr") else "./scripts/mr"
 
 
 def headless_flag() -> bool:

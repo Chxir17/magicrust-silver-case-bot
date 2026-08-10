@@ -1,16 +1,3 @@
-"""Состояние бота в state/state.json.
-
-Ключи:
-    last_open     — когда кейс открылся в последний раз
-    last_win      — что выпало
-    last_status   — итог последней попытки: успех, перезарядка, ошибка
-    last_silver   — число из последнего успешного открытия
-    silver_total  — сумма за всё время
-    history       — последние HISTORY_LEN открытий для /stats
-    opens         — счётчик успешных открытий
-    next_attempt  — следующая попытка 
-"""
-
 from __future__ import annotations
 
 import fcntl

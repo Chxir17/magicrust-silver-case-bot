@@ -1,5 +1,3 @@
-"""Chromium и страница magicrust.gg: запуск, навигация, клики."""
-
 from __future__ import annotations
 
 import os

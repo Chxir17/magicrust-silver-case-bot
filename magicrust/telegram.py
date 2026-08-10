@@ -10,35 +10,7 @@ from . import admin
 from .config import LOG_FILE, STATE_DIR, TG_OFFSET_FILE, log
 from .fmt import amount, human_delta, local, now, parse_dt, plural
 from .state import attempt_status, read_state
-
-GREETING = (
-    "Бот кейса Magic Rust на связи.\n"
-    "Открываю «Бесплатное серебро» раз в 10 часов и пишу сюда результат.\n\n"
-    "Что показать:\n"
-    "/status — когда следующая попытка и сколько собрано\n"
-    "/last — что выпало в прошлый раз\n"
-    "/stats — история последних открытий\n"
-    "/log — последние строки журнала\n"
-    "/timer — расписание таймера\n\n"
-    "Что сделать:\n"
-    "/run — попытаться открыть кейс сейчас\n"
-    "/run force — то же, не глядя на расписание\n"
-    "/check — полная проверка сессии через браузер\n"
-    "/restart — перечитать юниты и перезапустить\n"
-    "/update — обновить код из репозитория\n"
-    "/login — как перенести сессию Steam"
-)
-
-LOGIN_HELP = (
-    "Вход в Steam делается на вашем компьютере: на сервере нет графической\n"
-    "оболочки, а Steam Guard просит код вручную.\n\n"
-    "1. ./scripts/mr login\n"
-    "2. ./scripts/mr export-cookies state/cookies.json\n"
-    "3. Пришлите cookies.json сюда файлом — я его подключу.\n\n"
-    "Файл содержит ключ доступа к аккаунту на сайте. Он пройдёт через серверы\n"
-    "Telegram, и после импорта я его удалю. Если это нежелательно — переносите\n"
-    "файл через scp, как описано в README."
-)
+from .texts import Chat, Menu, Time, Words
 
 
 def tg_api(method: str, http_timeout: int = 20, **params):
@@ -55,7 +27,7 @@ def tg_api(method: str, http_timeout: int = 20, **params):
             log.warning("Telegram %s вернул ошибку: %s", method, answer.get("description"))
             return None
         return answer.get("result")
-    except Exception as exc:                               
+    except Exception as exc:
         log.warning("Telegram %s недоступен: %s", method, exc)
         return None
 
@@ -72,6 +44,7 @@ def notify(text: str, chat_id: str | None = None) -> None:
         disable_web_page_preview="true",
     )
 
+
 #  Тексты ответов
 
 def status_text() -> str:
@@ -79,25 +52,24 @@ def status_text() -> str:
     lines = []
 
     last = parse_dt(state.get("last_open"))
-    lines.append(f"Последний кейс: {local(last)}" if last else "Кейс ещё не открывали")
+    lines.append(Chat.LAST_OPEN.format(when=local(last)) if last else Chat.NEVER_OPENED)
 
     nxt = parse_dt(state.get("next_attempt"))
     if nxt:
         lines.append(
-            f"Следующая попытка: {local(nxt)} (через {human_delta(nxt)})"
+            Chat.NEXT_TRY.format(when=local(nxt), left=human_delta(nxt))
             if nxt > now()
-            else "Следующая попытка: при ближайшем запуске таймера"
+            else Chat.NEXT_TRY_SOON
         )
     if state.get("last_silver"):
-        lines.append(f"Последний раз выпало: {amount(state['last_silver'])} серебра")
+        lines.append(Chat.LAST_SILVER.format(silver=amount(state["last_silver"])))
     if state.get("opens"):
-        total = state.get("silver_total")
-        line = f"Всего открыто кейсов: {state['opens']}"
-        if total:
-            line += f", собрано {amount(total)} серебра"
+        line = Chat.TOTAL_OPENS.format(opens=state["opens"])
+        if state.get("silver_total"):
+            line += Chat.TOTAL_SILVER.format(silver=amount(state["silver_total"]))
         lines.append(line)
     if attempt_status(state):
-        lines.append(f"Итог последней попытки: {attempt_status(state)}")
+        lines.append(Chat.LAST_STATUS.format(status=attempt_status(state)))
     return "\n".join(lines)
 
 
@@ -105,37 +77,49 @@ def stats_text() -> str:
     state = read_state()
     history = state.get("history") or []
     if not history:
-        return "Открытий пока не было."
+        return Chat.NO_HISTORY
 
     lines = [
-        f"Последние {len(history)} "
-        f"{plural(len(history), 'открытие', 'открытия', 'открытий')}:"
+        Chat.HISTORY_HEAD.format(
+            count=len(history), word=plural(len(history), *Words.OPENINGS)
+        )
     ]
     for item in reversed(history):
         opened = parse_dt(item.get("at"))
         silver = item.get("silver")
-        when = local(opened) if opened else "—"
-        lines.append(f"  {when} — {amount(silver) + ' серебра' if silver else 'без числа в ответе'}")
+        lines.append(
+            Chat.HISTORY_ROW.format(
+                when=local(opened) if opened else Time.UNKNOWN_DATE,
+                value=(
+                    Chat.HISTORY_SILVER.format(silver=amount(silver))
+                    if silver
+                    else Chat.HISTORY_UNKNOWN
+                ),
+            )
+        )
 
     known = [item["silver"] for item in history if item.get("silver")]
     if known:
         lines.append("")
-        lines.append(f"Среднее за открытие: {amount(round(sum(known) / len(known)))} серебра")
-        lines.append(f"Лучшее: {amount(max(known))}, худшее: {amount(min(known))}")
+        lines.append(Chat.AVERAGE.format(silver=amount(round(sum(known) / len(known)))))
+        lines.append(Chat.BEST_WORST.format(best=amount(max(known)), worst=amount(min(known))))
     if state.get("silver_total"):
         opens = state.get("opens", 0)
         lines.append(
-            f"Всего собрано: {amount(state['silver_total'])} серебра "
-            f"за {opens} {plural(opens, 'кейс', 'кейса', 'кейсов')}"
+            Chat.GRAND_TOTAL.format(
+                silver=amount(state["silver_total"]),
+                opens=opens,
+                word=plural(opens, *Words.CASES),
+            )
         )
     return "\n".join(lines)
 
 
 def tail_log(lines: int = 15) -> str:
     if not LOG_FILE.exists():
-        return "Журнал пока пуст."
+        return Chat.EMPTY_LOG
     tail = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
-    return "\n".join(tail)[-3500:] or "Журнал пока пуст."
+    return "\n".join(tail)[-3500:] or Chat.EMPTY_LOG
 
 
 def handle_command(text: str) -> str:
@@ -143,51 +127,34 @@ def handle_command(text: str) -> str:
     parts = text.strip().split()
     command = parts[0].split("@")[0].lower()
     if command in ("/start", "/help"):
-        return GREETING
+        return Chat.GREETING
     if command == "/status":
         return status_text()
     if command == "/last":
         state = read_state()
         win, opened = state.get("last_win"), parse_dt(state.get("last_open"))
         if not win:
-            return "Кейс ещё не открывали."
-        return f"{local(opened)} — {win}" if opened else f"Прошлый раз: {win}"
+            return Chat.NEVER_OPENED_DOT
+        return (
+            Chat.LAST_WIN_AT.format(when=local(opened), win=win)
+            if opened
+            else Chat.LAST_WIN.format(win=win)
+        )
     if command == "/stats":
         return stats_text()
     if command == "/log":
         return tail_log(int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 15)
     if command == "/login":
-        return LOGIN_HELP
+        return Chat.LOGIN_HELP
     if command == "/version":
-        known = ", ".join(sorted(name for name, _ in COMMAND_MENU))
-        return f"Версия: {admin.version()}\nЗнаю команды: {known}"
-    return "Не знаю такой команды. /start — список того, что умею."
-
-COMMAND_MENU = [
-    ("status", "Когда следующая попытка и сколько собрано"),
-    ("last", "Что выпало в прошлый раз"),
-    ("stats", "История последних открытий"),
-    ("run", "Попытаться открыть кейс сейчас"),
-    ("check", "Полная проверка сессии через браузер"),
-    ("timer", "Расписание таймера"),
-    ("log", "Последние строки журнала"),
-    ("restart", "Перечитать юниты и перезапустить"),
-    ("update", "Обновить код из репозитория"),
-    ("login", "Как перенести сессию Steam"),
-    ("version", "Какая версия развёрнута"),
-    ("help", "Список команд"),
-]
+        known = ", ".join(sorted(name for name, _ in Menu.COMMANDS))
+        return Chat.VERSION.format(version=admin.version(), commands=known)
+    return Chat.UNKNOWN
 
 
 def publish_menu(owner: str) -> None:
-    """Публикует подсказку по командам.
-
-    Меню показывается только владельцу: команды всё равно выполняются лишь для
-    него, а посторонним, наткнувшимся на бота в поиске, показывать нечего.
-    Если адресный вызов не прошёл, ставим общее меню — лучше так, чем никакого.
-    """
     commands = json.dumps(
-        [{"command": name, "description": text} for name, text in COMMAND_MENU]
+        [{"command": name, "description": text} for name, text in Menu.COMMANDS]
     )
     try:
         scope = json.dumps({"type": "chat", "chat_id": int(owner)})
@@ -200,7 +167,7 @@ def publish_menu(owner: str) -> None:
             commands="[]",
             scope=json.dumps({"type": "all_private_chats"}),
         )
-        log.info("меню команд обновлено (%d команд)", len(COMMAND_MENU))
+        log.info("меню команд обновлено (%d команд)", len(Menu.COMMANDS))
         return
 
     log.warning("не удалось задать меню для владельца, ставлю общее")
@@ -208,24 +175,24 @@ def publish_menu(owner: str) -> None:
 
 
 def run_ack(args: list[str]) -> str | None:
-    """Подтверждение перед долгой попыткой. Если ждать нечего — не шлём его."""
     if any(word.lower() in admin.FORCE_WORDS for word in args):
-        return "Пробую открыть кейс, это займёт до минуты…"
+        return Chat.ACK_RUN
     nxt = parse_dt(read_state().get("next_attempt"))
     if nxt and nxt > now():
-        return None                                       # ответ придёт мгновенно
-    return "Пробую открыть кейс, это займёт до минуты…"
+        return None
+    return Chat.ACK_RUN
 
 
 SLOW_COMMANDS = {
     "/run": (run_ack, admin.attempt),
-    "/check": ("Проверяю сессию через браузер…", lambda args: admin.check()),
-    "/timer": ("Смотрю расписание…", lambda args: admin.timer()),
-    "/restart": ("Перечитываю юниты и перезапускаю…", lambda args: admin.restart()),
-    "/update": ("Обновляю код из репозитория…", lambda args: admin.update()),
+    "/check": (Chat.ACK_CHECK, lambda args: admin.check()),
+    "/timer": (Chat.ACK_TIMER, lambda args: admin.timer()),
+    "/restart": (Chat.ACK_RESTART, lambda args: admin.restart()),
+    "/update": (Chat.ACK_UPDATE, lambda args: admin.update()),
 }
 
-#  Опрос
+
+#опрос
 
 def poll(once: bool = False) -> int:
     """Опрашивает Telegram и отвечает на команды."""
@@ -253,7 +220,7 @@ def poll(once: bool = False) -> int:
             "getUpdates", http_timeout=poll_seconds + 20, offset=offset, timeout=poll_seconds
         )
         if updates is None:
-            time.sleep(10)                                   
+            time.sleep(10)
             if once:
                 return 1
             continue
@@ -301,9 +268,9 @@ def answer_update(update: dict, owner: str) -> None:
     if command in SLOW_COMMANDS:
         ack, action = SLOW_COMMANDS[command]
         args = parts[1:]
-        message = ack(args) if callable(ack) else ack
-        if message:
-            notify(message, chat_id=chat_id)
+        message_text = ack(args) if callable(ack) else ack
+        if message_text:
+            notify(message_text, chat_id=chat_id)
         notify(action(args), chat_id=chat_id)
         return
 
@@ -313,13 +280,13 @@ def answer_update(update: dict, owner: str) -> None:
 def accept_cookies(document: dict) -> str:
     name = document.get("file_name") or ""
     if not name.endswith(".json"):
-        return "Жду файл cookies.json. Как его получить — /login"
+        return Chat.COOKIES_EXPECTED
     if (document.get("file_size") or 0) > 1_000_000:
-        return "Файл слишком большой для набора куки."
+        return Chat.COOKIES_TOO_BIG
 
     info = tg_api("getFile", file_id=document["file_id"])
     if not info or not info.get("file_path"):
-        return "Не удалось забрать файл у Telegram."
+        return Chat.COOKIES_NOT_FETCHED
 
     token = os.environ.get("TG_TOKEN")
     url = f"https://api.telegram.org/file/bot{token}/{info['file_path']}"
@@ -327,11 +294,11 @@ def accept_cookies(document: dict) -> str:
         with urllib.request.urlopen(url, timeout=60) as response:
             raw = response.read().decode("utf-8")
         cookies = json.loads(raw)
-    except Exception as exc:                                
-        return f"Файл не читается: {exc}"
+    except Exception as exc:
+        return Chat.COOKIES_UNREADABLE.format(error=exc)
 
     if not isinstance(cookies, list) or not all(isinstance(c, dict) for c in cookies):
-        return "Это не похоже на выгрузку куки: ожидался список объектов."
+        return Chat.COOKIES_WRONG_SHAPE
 
     target = STATE_DIR / "cookies.json"
     STATE_DIR.mkdir(parents=True, exist_ok=True)

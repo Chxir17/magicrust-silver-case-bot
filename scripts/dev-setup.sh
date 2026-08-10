@@ -36,7 +36,7 @@ fi
 cat <<'EOF'
 
 Готово. Дальше:
-  ./scripts/mr login     вход через Steam (окно браузера, пароль вводите вы)
-  ./scripts/mr status    проверить сессию
-  ./scripts/mr export-cookies state/cookies.json    выгрузить для переноса на VPS
+  ./scripts/mr login     вход через Steam (откроется окно браузера)
+  ./scripts/mr status    проверка сессии
+  ./scripts/mr export-cookies state/cookies.json    выгрузка для переноса на сервер
 EOF
