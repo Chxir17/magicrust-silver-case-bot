@@ -13,6 +13,7 @@ USERS_DIR = STATE_DIR / "users"          # по каталогу на игрок
 USERS_FILE = STATE_DIR / "users.json"    # реестр доступа
 LOG_FILE = STATE_DIR / "bot.log"
 TG_OFFSET_FILE = STATE_DIR / "tg_offset"
+COOKIE_TOOL = ROOT / "tools" / "get-cookies.py"   # его бот отдаёт по /cookies
 
 SITE = "https://magicrust.gg/ru"
 PRODUCT_ID = 5

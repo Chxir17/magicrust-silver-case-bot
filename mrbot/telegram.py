@@ -5,9 +5,11 @@ import os
 import time
 import urllib.parse
 import urllib.request
+import uuid
+from pathlib import Path
 
 from . import admin, users
-from .config import LOG_FILE, TG_OFFSET_FILE, log
+from .config import COOKIE_TOOL, LOG_FILE, TG_OFFSET_FILE, log
 from .cookies import normalize
 from .fmt import amount, human_delta, local, now, parse_dt, plural
 from .state import attempt_status, read_state
@@ -49,6 +51,61 @@ def notify(text: str, chat_id: str | None = None) -> None:
 def notify_owner(text: str) -> None:
     """Сообщение владельцу того аккаунта, с которым идёт работа сейчас."""
     notify(text, chat_id=users.current().chat_id or None)
+
+
+def multipart(fields: dict, name: str, blob: bytes, boundary: str) -> bytes:
+    """Тело multipart/form-data — sendDocument иначе файл не примет."""
+    parts = []
+    for key, value in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n'
+            f"{value}\r\n".encode()
+        )
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
+        f'filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
+    )
+    parts.append(blob)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(parts)
+
+
+def send_file(chat_id: str, path: Path, caption: str = "") -> bool:
+    token = os.environ.get("TG_TOKEN")
+    if not token:
+        return False
+
+    boundary = uuid.uuid4().hex
+    try:
+        body = multipart(
+            {"chat_id": chat_id, "caption": caption},
+            path.name,
+            path.read_bytes(),
+            boundary,
+        )
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            answer = json.loads(response.read().decode("utf-8"))
+        if not answer.get("ok"):
+            log.warning("Telegram не принял файл: %s", answer.get("description"))
+            return False
+        return True
+    except Exception as exc:
+        log.warning("не отправил %s: %s", path.name, exc)
+        return False
+
+
+def send_cookie_tool(chat_id: str) -> None:
+    if not COOKIE_TOOL.exists():
+        log.error("нет файла %s — обновите код", COOKIE_TOOL)
+        notify(Chat.TOOL_MISSING, chat_id=chat_id)
+        return
+    if not send_file(chat_id, COOKIE_TOOL, Chat.TOOL_CAPTION):
+        notify(Chat.TOOL_NOT_SENT, chat_id=chat_id)
 
 
 #  Тексты ответов
@@ -405,6 +462,10 @@ def answer_update(update: dict) -> None:
     if command in ADMIN_ONLY and not is_admin:
         log.warning("%s просит админскую команду %s — отказано", account.title, command)
         notify(Chat.ADMIN_ONLY, chat_id=chat_id)
+        return
+
+    if command == "/cookies":
+        send_cookie_tool(chat_id)
         return
 
     if command in MANAGE:
