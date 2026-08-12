@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import admin, users
 from .config import COOKIE_TOOL, LOG_FILE, TG_OFFSET_FILE, log
-from .cookies import normalize
+from .cookies import SESSION, from_text, has_session, normalize
 from .fmt import amount, human_delta, local, now, parse_dt, plural
 from .state import attempt_status, read_state
 from .texts import Chat, Menu, Time, Words
@@ -97,6 +97,50 @@ def send_file(chat_id: str, path: Path, caption: str = "") -> bool:
     except Exception as exc:
         log.warning("не отправил %s: %s", path.name, exc)
         return False
+
+
+def delete_message(chat_id: str, message_id) -> bool:
+    """Убирает из чата сообщение с ключом. Боту это разрешено в личке."""
+    if not message_id:
+        return False
+    return tg_api("deleteMessage", chat_id=chat_id, message_id=message_id) is not None
+
+
+def import_for(account: users.Account, cookies: list[dict]) -> str:
+    """Кладёт куки во временный файл рядом с профилем и отдаёт их браузеру."""
+    account.dir.mkdir(parents=True, exist_ok=True)
+    target = account.dir / "cookies.json"
+    target.write_text(json.dumps(cookies, ensure_ascii=False), encoding="utf-8")
+    target.chmod(0o600)
+    try:
+        return admin.import_cookies(str(target), account)
+    finally:
+        target.unlink(missing_ok=True)
+
+
+def accept_pasted(text: str, account: users.Account, chat_id: str, message_id) -> None:
+    cookies = from_text(text)
+    if not cookies:
+        notify(Chat.PASTE_HELP, chat_id=chat_id)
+        return
+    if not has_session(cookies):
+        notify(Chat.PASTE_NO_SESSION.format(name=SESSION), chat_id=chat_id)
+        return
+
+    # Сначала прячем ключ, потом уже долгий импорт через браузер.
+    hidden = delete_message(chat_id, message_id)
+    log.info("вставлен ключ сессии от %s: кук %d", account.title, len(cookies))
+    answer = import_for(account, cookies)
+    notify(answer + (Chat.SECRET_HIDDEN if hidden else Chat.SECRET_STAYS), chat_id=chat_id)
+
+
+def looks_pasted(text: str) -> bool:
+    """Похоже ли сообщение на вставленные куки, а не на обычную реплику."""
+    if text.startswith("/"):
+        return False
+    if text[:1] in ("[", "{") or SESSION in text:
+        return True
+    return len(text) > 100 and not any(space in text for space in " \n\t")
 
 
 def send_cookie_tool(chat_id: str) -> None:
@@ -445,8 +489,11 @@ def answer_update(update: dict) -> None:
             ask_access(message, chat_id)
         return
 
+    message_id = message.get("message_id")
+
     if message.get("document"):
-        notify(accept_cookies(message["document"], account), chat_id=chat_id)
+        answer, secret = accept_cookies(message["document"], account, chat_id, message_id)
+        notify(answer + (Chat.SECRET_HIDDEN if secret else ""), chat_id=chat_id)
         return
 
     text = (message.get("text") or "").strip()
@@ -457,6 +504,15 @@ def answer_update(update: dict) -> None:
     command = parts[0].split("@")[0].lower()
     args = parts[1:]
     is_admin = users.is_admin(chat_id)
+
+    # Ключ сессии в журнал не попадает — ни целиком, ни куском.
+    if command == "/paste":
+        accept_pasted(text.split(maxsplit=1)[1] if args else "", account, chat_id, message_id)
+        return
+    if looks_pasted(text):
+        accept_pasted(text, account, chat_id, message_id)
+        return
+
     log.info("команда от %s: %s", account.title, text[:80])
 
     if command in ADMIN_ONLY and not is_admin:
@@ -503,16 +559,19 @@ def ask_access(message: dict, chat_id: str) -> None:
         notify(request, chat_id=admin_id)
 
 
-def accept_cookies(document: dict, account: users.Account) -> str:
+def accept_cookies(
+    document: dict, account: users.Account, chat_id: str = "", message_id=None
+) -> tuple[str, bool]:
+    """Возвращает ответ человеку и признак того, что файл убран из чата."""
     name = document.get("file_name") or ""
     if not name.endswith(".json"):
-        return Chat.COOKIES_EXPECTED
+        return Chat.COOKIES_EXPECTED, False
     if (document.get("file_size") or 0) > 1_000_000:
-        return Chat.COOKIES_TOO_BIG
+        return Chat.COOKIES_TOO_BIG, False
 
     info = tg_api("getFile", file_id=document["file_id"])
     if not info or not info.get("file_path"):
-        return Chat.COOKIES_NOT_FETCHED
+        return Chat.COOKIES_NOT_FETCHED, False
 
     token = os.environ.get("TG_TOKEN")
     url = f"https://api.telegram.org/file/bot{token}/{info['file_path']}"
@@ -521,20 +580,15 @@ def accept_cookies(document: dict, account: users.Account) -> str:
             raw = response.read().decode("utf-8")
         payload = json.loads(raw)
     except Exception as exc:
-        return Chat.COOKIES_UNREADABLE.format(error=exc)
+        return Chat.COOKIES_UNREADABLE.format(error=exc), False
 
     if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
-        return Chat.COOKIES_WRONG_SHAPE
-    if not normalize(payload):
-        return Chat.COOKIES_NOT_OURS
+        return Chat.COOKIES_WRONG_SHAPE, False
 
-    account.dir.mkdir(parents=True, exist_ok=True)
-    target = account.dir / "cookies.json"
-    target.write_text(raw, encoding="utf-8")
-    target.chmod(0o600)
-    log.info("получены куки от %s: %d записей", account.title, len(payload))
+    cookies = normalize(payload)
+    if not cookies:
+        return Chat.COOKIES_NOT_OURS, False
 
-    try:
-        return admin.import_cookies(str(target), account)
-    finally:
-        target.unlink(missing_ok=True)
+    hidden = delete_message(chat_id, message_id)
+    log.info("получены куки от %s: записей %d", account.title, len(payload))
+    return import_for(account, cookies), hidden
