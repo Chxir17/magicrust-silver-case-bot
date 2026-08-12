@@ -9,8 +9,8 @@ from pathlib import Path
 # Корень проекта
 ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / "state"
-PROFILE_DIR = STATE_DIR / "profile"
-STATE_FILE = STATE_DIR / "state.json"
+USERS_DIR = STATE_DIR / "users"          # по каталогу на игрока
+USERS_FILE = STATE_DIR / "users.json"    # реестр доступа
 LOG_FILE = STATE_DIR / "bot.log"
 TG_OFFSET_FILE = STATE_DIR / "tg_offset"
 

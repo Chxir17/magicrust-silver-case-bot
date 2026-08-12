@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from playwright.sync_api import TimeoutError as PWTimeout
 
+from . import users
 from .browser import click_element, is_logged_in, open_site
 from .config import (
     AUTH_BTN,
@@ -17,13 +18,13 @@ from .config import (
     RETRY_ON_COOLDOWN,
     RETRY_ON_ERROR,
     RETRY_ON_NO_SESSION,
-    STATE_DIR,
     log,
     scaled,
 )
 from .fmt import amount, human_delta, now, parse_dt
 from .state import read_state, record_open, schedule_at, schedule_next, write_state
-from .telegram import notify
+from .telegram import notify_owner
+from .texts import Chat
 
 COOLDOWN_WORDS = re.compile(
     r"подожд|недоступ|уже\s+(получ|открыл|забра)|попробуйте\s+позже|осталось|"
@@ -70,11 +71,17 @@ def payload_is_error(payload) -> bool:
     return bool(payload.get("error") or payload.get("errors"))
 
 
+SESSION_LOST = "сессия истекла"
+
+
 def session_lost(reason: str) -> int:
-    log.error("%s — нужен повторный вход (bot.py login)", reason)
-    write_state(last_status="сессия истекла")
+    log.error("%s — нужен повторный вход (%s)", reason, users.current().title)
+    # Про мёртвую сессию сообщаем один раз, а не при каждом ретрае.
+    silent = read_state().get("last_status") == SESSION_LOST
+    write_state(last_status=SESSION_LOST)
     schedule_next(RETRY_ON_NO_SESSION)
-    notify("Magic Rust: сессия истекла, нужен повторный вход через Steam")
+    if not silent:
+        notify_owner(Chat.PUSH_SESSION_LOST)
     return 2
 
 
@@ -95,7 +102,7 @@ def attempt_open(context) -> int:
     if button.count() == 0:
         text = page.locator(MODAL).inner_text().strip()
         log.error("кнопка «Открыть кейс» не найдена. Текст модалки:\n%s", text[:500])
-        page.screenshot(path=str(STATE_DIR / "last_error.png"), full_page=False)
+        page.screenshot(path=str(users.current().dir / "last_error.png"), full_page=False)
         write_state(last_status="кнопка не найдена")
         schedule_next(RETRY_ON_ERROR)
         return 3
@@ -116,7 +123,11 @@ def attempt_open(context) -> int:
     if COOLDOWN_WORDS.search(f"{message} {body} {modal_text}") or status in (403, 419, 429):
         return on_cooldown(message)
 
-    log.error("непонятный результат (HTTP %s), скриншот: %s", status, STATE_DIR / "last_open.png")
+    log.error(
+        "непонятный результат (HTTP %s), скриншот: %s",
+        status,
+        users.current().dir / "last_open.png",
+    )
     write_state(last_status=f"ошибка HTTP {status}")
     schedule_next(RETRY_ON_ERROR)
     return 3
@@ -162,7 +173,7 @@ def settle_and_snapshot(page) -> str:
     try:
         page.wait_for_timeout(9000)
         modal_text = " ".join(page.locator(MODAL).inner_text().split())
-        page.screenshot(path=str(STATE_DIR / "last_open.png"))
+        page.screenshot(path=str(users.current().dir / "last_open.png"))
         log.info("модалка: %s", modal_text[:300])
         return modal_text
     except Exception as exc:                              
@@ -176,10 +187,10 @@ def settle_and_snapshot(page) -> str:
 def on_success(payload) -> int:
     silver = find_silver(payload)
     result = f"выпало {amount(silver)} серебра" if silver else "кейс открыт"
-    log.info("УСПЕХ: %s", result)
+    log.info("УСПЕХ (%s): %s", users.current().title, result)
     record_open(silver, result, payload)
     schedule_next(COOLDOWN_MIN + COOLDOWN_PAD, jitter=10)
-    notify(f"Magic Rust: кейс открыт — {result}")
+    notify_owner(Chat.PUSH_OPENED.format(result=result))
     return 0
 
 

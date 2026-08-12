@@ -3,22 +3,30 @@ from __future__ import annotations
 import fcntl
 import json
 import random
+import time
 from contextlib import contextmanager
 from datetime import timedelta
 
-from .config import HISTORY_LEN, STATE_DIR, STATE_FILE, log
+from . import users
+from .config import HISTORY_LEN, STATE_DIR, log
 from .fmt import now
 
 
 @contextmanager
-def single_run():
+def single_run(wait: int = 0):
+    """Один Chromium на весь бот: остальные ждут `wait` секунд или уходят."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     handle = open(STATE_DIR / "run.lock", "w")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        raise RuntimeError("другая попытка уже выполняется") from None
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                raise RuntimeError("другая попытка уже выполняется") from None
+            time.sleep(2)
     try:
         yield
     finally:
@@ -26,20 +34,24 @@ def single_run():
         handle.close()
 
 
-def read_state() -> dict:
-    if STATE_FILE.exists():
+def read_state(account: users.Account | None = None) -> dict:
+    path = (account or users.current()).state_file
+    if path.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             log.warning("state.json повреждён, начинаю с чистого состояния")
     return {}
 
 
 def write_state(**updates) -> dict:
-    state = read_state()
+    account = users.current()
+    state = read_state(account)
     state.update(updates)
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    account.dir.mkdir(parents=True, exist_ok=True)
+    account.state_file.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return state
 
 

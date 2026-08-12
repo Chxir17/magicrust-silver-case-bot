@@ -5,12 +5,12 @@ import sys
 
 from playwright.sync_api import TimeoutError as PWTimeout
 
+from . import users
 from .config import (
     CARD,
     GMOD_BTN,
     LOGGED_IN,
     PRODUCT_ID,
-    PROFILE_DIR,
     SITE,
     gmod,
     log,
@@ -21,7 +21,8 @@ from .config import (
 
 def browser_context(playwright, headless: bool):
     """Постоянный профиль Chromium: куки и localStorage переживают перезапуски."""
-    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = users.current().profile_dir
+    profile_dir.mkdir(parents=True, exist_ok=True)
     args = [
         "--disable-blink-features=AutomationControlled",
         "--disable-dev-shm-usage",
@@ -33,7 +34,7 @@ def browser_context(playwright, headless: bool):
 
     log.info("запускаю Chromium (headless=%s)", headless)
     context = playwright.chromium.launch_persistent_context(
-        user_data_dir=str(PROFILE_DIR),
+        user_data_dir=str(profile_dir),
         headless=headless,
         args=args,
         user_agent=user_agent(),

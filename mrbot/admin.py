@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 
+from . import users
 from .config import ROOT, log
 from .fmt import human_delta, local, now, parse_dt
 from .state import attempt_status, read_state
@@ -50,17 +51,24 @@ def run_command(argv: list[str], timeout: int = 600) -> str:
     return output
 
 
-def attempt(args: list[str]) -> str:
+def whose(account: users.Account) -> list[str]:
+    """Аргументы, которыми дочерний процесс выбирает нужного игрока."""
+    return ["--user", account.chat_id] if account.chat_id else []
+
+
+def attempt(args: list[str], account: users.Account) -> str:
     force = any(word.lower() in FORCE_WORDS for word in args)
 
-    state = read_state()
+    state = read_state(account)
     nxt = parse_dt(state.get("next_attempt"))
     if not force and nxt and nxt > now():
         return Chat.TOO_EARLY.format(when=local(nxt), left=human_delta(nxt))
 
     was_open = state.get("last_open")
-    code, raw = execute([sys.executable, BOT, "run"] + (["--force"] if force else []))
-    fresh = read_state()
+    code, raw = execute(
+        [sys.executable, BOT, "run"] + whose(account) + (["--force"] if force else [])
+    )
+    fresh = read_state(account)
 
     following = parse_dt(fresh.get("next_attempt"))
     when = (
@@ -79,8 +87,8 @@ def attempt(args: list[str]) -> str:
     return Chat.FAILED_UNKNOWN.format(details=raw or Chat.FAILED_SILENT) + when
 
 
-def check() -> str:
-    output = run_command([sys.executable, BOT, "status"])
+def check(account: users.Account) -> str:
+    output = run_command([sys.executable, BOT, "status"] + whose(account))
     lines = [line for line in output.splitlines() if not NOISE.match(line)]
     return re.sub(r":[ ]{2,}", ": ", "\n".join(lines).strip())
 
@@ -115,5 +123,5 @@ def privileged(action: str) -> str:
     return run_command(["sudo", "-n", ADMIN, action])
 
 
-def import_cookies(path: str) -> str:
-    return run_command([sys.executable, BOT, "import-cookies", path])
+def import_cookies(path: str, account: users.Account) -> str:
+    return run_command([sys.executable, BOT, "import-cookies", path] + whose(account))

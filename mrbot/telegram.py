@@ -6,8 +6,9 @@ import time
 import urllib.parse
 import urllib.request
 
-from . import admin
-from .config import LOG_FILE, STATE_DIR, TG_OFFSET_FILE, log
+from . import admin, users
+from .config import LOG_FILE, TG_OFFSET_FILE, log
+from .cookies import normalize
 from .fmt import amount, human_delta, local, now, parse_dt, plural
 from .state import attempt_status, read_state
 from .texts import Chat, Menu, Time, Words
@@ -33,7 +34,7 @@ def tg_api(method: str, http_timeout: int = 20, **params):
 
 
 def notify(text: str, chat_id: str | None = None) -> None:
-    target = chat_id or os.environ.get("TG_CHAT_ID")
+    target = str(chat_id or "") or next(iter(users.admin_ids()), "")
     if not target:
         return
     tg_api(
@@ -45,11 +46,19 @@ def notify(text: str, chat_id: str | None = None) -> None:
     )
 
 
+def notify_owner(text: str) -> None:
+    """Сообщение владельцу того аккаунта, с которым идёт работа сейчас."""
+    notify(text, chat_id=users.current().chat_id or None)
+
+
 #  Тексты ответов
 
-def status_text() -> str:
-    state = read_state()
+def status_text(account: users.Account) -> str:
+    state = read_state(account)
     lines = []
+
+    if not account.profile_dir.exists():
+        lines.append(Chat.NO_SESSION_YET)
 
     last = parse_dt(state.get("last_open"))
     lines.append(Chat.LAST_OPEN.format(when=local(last)) if last else Chat.NEVER_OPENED)
@@ -73,8 +82,8 @@ def status_text() -> str:
     return "\n".join(lines)
 
 
-def stats_text() -> str:
-    state = read_state()
+def stats_text(account: users.Account) -> str:
+    state = read_state(account)
     history = state.get("history") or []
     if not history:
         return Chat.NO_HISTORY
@@ -122,16 +131,16 @@ def tail_log(lines: int = 15) -> str:
     return "\n".join(tail)[-3500:] or Chat.EMPTY_LOG
 
 
-def handle_command(text: str) -> str:
+def handle_command(text: str, account: users.Account, is_admin: bool) -> str:
     """Быстрые ответы: только чтение состояния, без запуска браузера."""
     parts = text.strip().split()
     command = parts[0].split("@")[0].lower()
     if command in ("/start", "/help"):
-        return Chat.GREETING
+        return Chat.GREETING_ADMIN if is_admin else Chat.GREETING
     if command == "/status":
-        return status_text()
+        return status_text(account)
     if command == "/last":
-        state = read_state()
+        state = read_state(account)
         win, opened = state.get("last_win"), parse_dt(state.get("last_open"))
         if not win:
             return Chat.NEVER_OPENED_DOT
@@ -141,43 +150,153 @@ def handle_command(text: str) -> str:
             else Chat.LAST_WIN.format(win=win)
         )
     if command == "/stats":
-        return stats_text()
+        return stats_text(account)
     if command == "/log":
         return tail_log(int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 15)
     if command == "/login":
         return Chat.LOGIN_HELP
     if command == "/version":
-        known = ", ".join(sorted(name for name, _ in Menu.COMMANDS))
+        known = ", ".join(sorted(name for name, _ in Menu.ADMIN))
         return Chat.VERSION.format(version=admin.version(), commands=known)
     return Chat.UNKNOWN
 
 
-def publish_menu(owner: str) -> None:
-    commands = json.dumps(
-        [{"command": name, "description": text} for name, text in Menu.COMMANDS]
+#  Управление доступом
+
+def who(chat_id: str, entry: dict) -> str:
+    name = (entry or {}).get("name") or ""
+    username = (entry or {}).get("username") or ""
+    label = " ".join(part for part in (name, f"@{username}" if username else "") if part)
+    return f"{label} · {chat_id}" if label else str(chat_id)
+
+
+def account_status(account: users.Account) -> str:
+    if not account.profile_dir.exists():
+        return Chat.USERS_NO_SESSION
+    state = read_state(account)
+    nxt = parse_dt(state.get("next_attempt"))
+    line = (
+        Chat.USERS_NEXT.format(left=human_delta(nxt))
+        if nxt and nxt > now()
+        else Chat.USERS_IDLE
     )
+    if state.get("opens"):
+        line += Chat.USERS_OPENS.format(opens=state["opens"])
+    return line
+
+
+def target_id(args: list[str], command: str) -> tuple[str, str]:
+    if not args:
+        return "", Chat.USAGE_ID.format(command=command)
+    value = args[0].lstrip("@")
+    if not value.lstrip("-").isdigit():
+        return "", Chat.BAD_ID.format(value=value[:32])
+    return value, ""
+
+
+def list_users(args: list[str], chat_id: str) -> str:
+    registry = users.read_registry()
+    people, waiting = registry["users"], registry["pending"]
+
+    lines = []
+    if people:
+        lines.append(Chat.USERS_HEAD.format(count=len(people)))
+        for uid, entry in people.items():
+            lines.append(
+                Chat.USERS_ROW.format(
+                    who=who(uid, entry),
+                    admin=Chat.USERS_ADMIN_MARK if users.is_admin(uid) else "",
+                    status=account_status(users.Account(uid, entry.get("name", ""))),
+                )
+            )
+    else:
+        lines.append(Chat.NO_USERS)
+
+    if waiting:
+        lines.append("")
+        lines.append(Chat.PENDING_HEAD.format(count=len(waiting)))
+        for uid, entry in waiting.items():
+            lines.append(Chat.PENDING_ROW.format(who=who(uid, entry), id=uid))
+    return "\n".join(lines)
+
+
+def approve_user(args: list[str], chat_id: str) -> str:
+    target, problem = target_id(args, "/approve")
+    if problem:
+        return problem
+
+    entry = users.pending().get(target, {})
+    label = who(target, entry)
+    if not users.add(target, entry.get("name", ""), entry.get("username", ""), by=chat_id):
+        return Chat.ALREADY_ADDED.format(who=label)
+
+    publish_menu()
+    notify(Chat.ACCESS_GRANTED, chat_id=target)
+    notify(Chat.LOGIN_HELP, chat_id=target)
+    return Chat.ADDED.format(who=label)
+
+
+def remove_user(args: list[str], chat_id: str) -> str:
+    target, problem = target_id(args, "/remove")
+    if problem:
+        return problem
+    if users.is_admin(target):
+        return Chat.SELF_REMOVE
+    if not users.remove(target):
+        return Chat.NOT_A_USER.format(id=target)
+
+    forget_menu(target)
+    notify(Chat.ACCESS_REVOKED, chat_id=target)
+    return Chat.REMOVED.format(id=target)
+
+
+MANAGE = {
+    "/users": list_users,
+    "/approve": approve_user,
+    "/remove": remove_user,
+}
+
+
+#  Меню команд
+
+def chat_scope(chat_id: str) -> str | None:
     try:
-        scope = json.dumps({"type": "chat", "chat_id": int(owner)})
+        return json.dumps({"type": "chat", "chat_id": int(chat_id)})
     except ValueError:
-        scope = None
-
-    if scope and tg_api("setMyCommands", commands=commands, scope=scope) is not None:
-        tg_api(
-            "setMyCommands",
-            commands="[]",
-            scope=json.dumps({"type": "all_private_chats"}),
-        )
-        log.info("меню команд обновлено (%d команд)", len(Menu.COMMANDS))
-        return
-
-    log.warning("не удалось задать меню для владельца, ставлю общее")
-    tg_api("setMyCommands", commands=commands)
+        return None
 
 
-def run_ack(args: list[str]) -> str | None:
+def menu_json(commands) -> str:
+    return json.dumps([{"command": name, "description": text} for name, text in commands])
+
+
+def publish_menu() -> None:
+    """Каждому чату — свой набор подсказок, посторонним не видно ничего."""
+    tg_api("setMyCommands", commands="[]", scope=json.dumps({"type": "all_private_chats"}))
+
+    shown = 0
+    for account in users.accounts():
+        scope = chat_scope(account.chat_id)
+        if not scope:
+            continue
+        commands = Menu.ADMIN if users.is_admin(account.chat_id) else Menu.USER
+        if tg_api("setMyCommands", commands=menu_json(commands), scope=scope) is not None:
+            shown += 1
+    log.info("меню команд обновлено для %d чатов", shown)
+
+
+def forget_menu(chat_id: str) -> None:
+    scope = chat_scope(chat_id)
+    if scope:
+        tg_api("deleteMyCommands", scope=scope)
+
+
+#  Долгие команды
+
+def run_ack(args: list[str], account: users.Account) -> str | None:
     if any(word.lower() in admin.FORCE_WORDS for word in args):
         return Chat.ACK_RUN
-    nxt = parse_dt(read_state().get("next_attempt"))
+    nxt = parse_dt(read_state(account).get("next_attempt"))
     if nxt and nxt > now():
         return None
     return Chat.ACK_RUN
@@ -185,11 +304,14 @@ def run_ack(args: list[str]) -> str | None:
 
 SLOW_COMMANDS = {
     "/run": (run_ack, admin.attempt),
-    "/check": (Chat.ACK_CHECK, lambda args: admin.check()),
-    "/timer": (Chat.ACK_TIMER, lambda args: admin.timer()),
-    "/restart": (Chat.ACK_RESTART, lambda args: admin.restart()),
-    "/update": (Chat.ACK_UPDATE, lambda args: admin.update()),
+    "/check": (Chat.ACK_CHECK, lambda args, account: admin.check(account)),
+    "/timer": (Chat.ACK_TIMER, lambda args, account: admin.timer()),
+    "/restart": (Chat.ACK_RESTART, lambda args, account: admin.restart()),
+    "/update": (Chat.ACK_UPDATE, lambda args, account: admin.update()),
 }
+
+# Команды, которые управляют сервером и чужими данными.
+ADMIN_ONLY = set(MANAGE) | {"/timer", "/restart", "/update", "/log", "/version"}
 
 
 #опрос
@@ -200,17 +322,23 @@ def poll(once: bool = False) -> int:
         log.error("TG_TOKEN не задан в .env")
         return 1
 
-    owner = str(os.environ.get("TG_CHAT_ID") or "").strip()
-    if not owner:
-        log.error("TG_CHAT_ID не задан — без него бот отвечал бы кому угодно")
+    admins = users.admin_ids()
+    if not admins:
+        log.error("TG_CHAT_ID не задан — без него некому управлять доступом")
         return 1
 
     me = tg_api("getMe")
     if not me:
         log.error("Telegram не принял токен — проверьте TG_TOKEN")
         return 1
-    log.info("слушаю Telegram как @%s, отвечаю только chat_id %s", me.get("username"), owner)
-    publish_menu(owner)
+
+    log.info(
+        "слушаю Telegram как @%s: администраторов %d, игроков %d",
+        me.get("username"),
+        len(admins),
+        len(users.accounts()),
+    )
+    publish_menu()
 
     offset = read_offset()
     poll_seconds = 0 if once else 50
@@ -227,7 +355,7 @@ def poll(once: bool = False) -> int:
 
         for update in updates:
             offset = update["update_id"] + 1
-            answer_update(update, owner)
+            answer_update(update)
 
         if offset:
             TG_OFFSET_FILE.write_text(str(offset), encoding="utf-8")
@@ -246,15 +374,22 @@ def read_offset() -> int | None:
         return None
 
 
-def answer_update(update: dict, owner: str) -> None:
+def answer_update(update: dict) -> None:
     message = update.get("message") or update.get("edited_message") or {}
-    chat_id = str((message.get("chat") or {}).get("id", ""))
-    if chat_id != owner:
-        log.warning("сообщение от чужого чата %s пропущено", chat_id)
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id", ""))
+    if not chat_id:
+        return
+
+    account = users.resolve(chat_id)
+    if account is None:
+        # В группы и каналы, куда бота просто добавили, не отвечаем.
+        if chat.get("type") == "private":
+            ask_access(message, chat_id)
         return
 
     if message.get("document"):
-        notify(accept_cookies(message["document"]), chat_id=chat_id)
+        notify(accept_cookies(message["document"], account), chat_id=chat_id)
         return
 
     text = (message.get("text") or "").strip()
@@ -263,21 +398,51 @@ def answer_update(update: dict, owner: str) -> None:
 
     parts = text.split()
     command = parts[0].split("@")[0].lower()
-    log.info("команда из Telegram: %s", text[:80])
+    args = parts[1:]
+    is_admin = users.is_admin(chat_id)
+    log.info("команда от %s: %s", account.title, text[:80])
+
+    if command in ADMIN_ONLY and not is_admin:
+        log.warning("%s просит админскую команду %s — отказано", account.title, command)
+        notify(Chat.ADMIN_ONLY, chat_id=chat_id)
+        return
+
+    if command in MANAGE:
+        notify(MANAGE[command](args, chat_id), chat_id=chat_id)
+        return
 
     if command in SLOW_COMMANDS:
         ack, action = SLOW_COMMANDS[command]
-        args = parts[1:]
-        message_text = ack(args) if callable(ack) else ack
+        message_text = ack(args, account) if callable(ack) else ack
         if message_text:
             notify(message_text, chat_id=chat_id)
-        notify(action(args), chat_id=chat_id)
+        notify(action(args, account), chat_id=chat_id)
         return
 
-    notify(handle_command(text), chat_id=chat_id)
+    notify(handle_command(text, account, is_admin), chat_id=chat_id)
 
 
-def accept_cookies(document: dict) -> str:
+def ask_access(message: dict, chat_id: str) -> None:
+    """Незнакомцу — отказ, администратору — заявка (по одной на человека)."""
+    sender = message.get("from") or {}
+    name = " ".join(
+        part for part in (sender.get("first_name"), sender.get("last_name")) if part
+    )
+    username = sender.get("username") or ""
+
+    fresh = users.remember_request(chat_id, name, username)
+    notify(Chat.NO_ACCESS.format(id=chat_id), chat_id=chat_id)
+    if not fresh:
+        return
+
+    request = Chat.ACCESS_REQUEST.format(
+        who=who(chat_id, {"name": name, "username": username}), id=chat_id
+    )
+    for admin_id in users.admin_ids():
+        notify(request, chat_id=admin_id)
+
+
+def accept_cookies(document: dict, account: users.Account) -> str:
     name = document.get("file_name") or ""
     if not name.endswith(".json"):
         return Chat.COOKIES_EXPECTED
@@ -293,20 +458,22 @@ def accept_cookies(document: dict) -> str:
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             raw = response.read().decode("utf-8")
-        cookies = json.loads(raw)
+        payload = json.loads(raw)
     except Exception as exc:
         return Chat.COOKIES_UNREADABLE.format(error=exc)
 
-    if not isinstance(cookies, list) or not all(isinstance(c, dict) for c in cookies):
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
         return Chat.COOKIES_WRONG_SHAPE
+    if not normalize(payload):
+        return Chat.COOKIES_NOT_OURS
 
-    target = STATE_DIR / "cookies.json"
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    account.dir.mkdir(parents=True, exist_ok=True)
+    target = account.dir / "cookies.json"
     target.write_text(raw, encoding="utf-8")
     target.chmod(0o600)
-    log.info("получен файл куки из Telegram: %d записей", len(cookies))
+    log.info("получены куки от %s: %d записей", account.title, len(payload))
 
     try:
-        return admin.import_cookies(str(target))
+        return admin.import_cookies(str(target), account)
     finally:
         target.unlink(missing_ok=True)

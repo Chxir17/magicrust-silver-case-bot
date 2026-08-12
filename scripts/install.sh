@@ -86,10 +86,12 @@ main() {
     cat <<EOF
 
 Готово. Дальше:
-  1. Впишите токен Telegram:      nano $DIR/.env
-  2. Перенесите сессию сайта:     mr import-cookies /tmp/cookies.json
-  3. Проверьте:                   mr status
-  4. Включите ответы в Telegram:  systemctl enable --now magicrust-telegram.service
+  1. Впишите TG_TOKEN и свой TG_CHAT_ID: nano $DIR/.env
+  2. Включите ответы в Telegram:  systemctl enable --now magicrust-telegram.service
+  3. Пришлите боту куки файлом (подскажет /login) или: mr import-cookies /tmp/cookies.json
+  4. Проверьте:                   mr status
+
+Остальных игроков добавляйте из чата: они пишут боту /start, вы — /approve id
 
 Расписание: mr timer      Журнал: mr logs
 EOF
