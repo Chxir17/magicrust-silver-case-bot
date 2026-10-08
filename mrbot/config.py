@@ -24,6 +24,7 @@ OPEN_BTN = f"{MODAL} .modal-roulette__btn.modal-product-buy"
 AUTH_BTN = f"{MODAL} .auth-btn"
 LOGGED_IN = ".header-top-v2__player"
 GMOD_BTN = ".products__gmod-btn.change-gmod"
+SURVEY = '[data-modal="player-survey"]'   # опрос игроков, перекрывает клики
 
 CHROME_MAJOR = 140
 

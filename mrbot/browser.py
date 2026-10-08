@@ -12,6 +12,7 @@ from .config import (
     LOGGED_IN,
     PRODUCT_ID,
     SITE,
+    SURVEY,
     gmod,
     log,
     scaled,
@@ -53,6 +54,8 @@ def browser_context(playwright, headless: bool):
 def goto_site(context):
     page = context.pages[0] if context.pages else context.new_page()
     page.goto(SITE, wait_until="domcontentloaded", timeout=scaled(60_000))
+    # Опрос может всплыть и позже, посреди прогона, — прячем его стилем на всю жизнь страницы.
+    page.add_style_tag(content=f"{SURVEY} {{ display: none !important; }}")
     return page
 
 
@@ -75,8 +78,24 @@ def dismiss_promo(page) -> None:
             if element.count() and element.first.is_visible():
                 element.first.click(timeout=3000)
                 page.wait_for_timeout(300)
-        except Exception:                                   
-            pass                                            
+        except Exception:
+            pass
+
+    dismiss_survey(page)
+
+
+def dismiss_survey(page) -> None:
+    """Закрывает опрос игроков, не отвечая на него: Escape, затем снимаем modal-on."""
+    survey = page.locator(f"{SURVEY}.modal-on")
+    try:
+        if survey.count() == 0:
+            return
+        log.info("закрываю опрос игроков")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+        survey.evaluate_all("els => els.forEach(e => e.classList.remove('modal-on'))")
+    except Exception:
+        pass
 
 
 def click_element(locator, what: str, timeout: int | None = None) -> None:
@@ -100,7 +119,7 @@ def select_gmod(page) -> None:
         raise RuntimeError(f"режим {target!r} не найден, доступны: {available}")
 
     if "active" not in (button.first.get_attribute("class") or ""):
-        button.first.click()
+        click_element(button.first, f"режиму {target!r}")
         page.wait_for_timeout(800)
 
     try:
